@@ -1,0 +1,46 @@
+version: 2
+jobs:
+  build:
+    working_directory: ~/tgrez
+    docker:
+      - image: futtetennista/hakyll:latest
+    branches:
+      only:
+        - hakyll
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "7c:90:da:8f:fb:f1:c9:c4:1c:8c:02:23:d9:95:3f:03"
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-stack-work-{{ checksum "tgrez-github-io.cabal" }}
+      - run:
+          name: Build site executable
+          command: |
+            stack setup
+            stack build
+      - save_cache:
+          paths:
+            - ~/tgrez/.stack-work
+            - /root/.stack/
+          key: v1-stack-work-{{ checksum "tgrez-github-io.cabal" }}
+      - deploy:
+          name: Deploy master to Github Pages
+          command: |
+            git config --global user.email robots@circleci.com
+            git config --global user.name CircleCI
+            git checkout master
+            git pull --rebase
+            git checkout hakyll
+            stack exec site rebuild
+            git checkout master
+            git pull --rebase
+            # Overwrite existing files with new files
+            cp -a _site/. .
+            #  Commit
+            git add --all
+            git commit -m "[`date '+%F %T %Z'`] new release"
+            # Push
+            git push origin master:master
+
