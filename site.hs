@@ -2,11 +2,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 import           Data.Monoid (mappend)
 import           Hakyll
-
+import           Text.Pandoc.Highlighting
 
 --------------------------------------------------------------------------------
+
+syntaxHighlightingStyle :: Style
+syntaxHighlightingStyle = pygments
+
 main :: IO ()
 main = hakyll $ do
+
+    preprocess $ do
+        let css = styleToCss syntaxHighlightStyle
+        writeFile "css/syntax.css" css >> putStrLn "  Generated css\\syntax.css"
+
     match "images/*" $ do
         route   idRoute
         compile copyFileCompiler

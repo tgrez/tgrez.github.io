@@ -4,25 +4,29 @@
         <meta charset="utf-8">
         <meta http-equiv="x-ua-compatible" content="ie=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>My Hakyll Blog - $title$</title>
+        <title>Yet Another Programmer's Blog - $title$</title>
         <link rel="stylesheet" href="/css/default.css" />
+        <link rel="stylesheet" href="/css/syntax.css" />
     </head>
     <body>
         <header>
-            <div class="logo">
-                <a href="/">Yet Another Programmer's Blog</a>
+            <div class="wrapper">
+                <div class="logo">
+                    <a href="/">Yet Another Programmer's Blog</a>
+                </div>
+                <nav>
+                    <a href="/">Home</a>
+                    <a href="/about.html">About</a>
+                    <a href="/archive.html">Archive</a>
+                </nav>
             </div>
-            <nav>
-                <a href="/">Home</a>
-                <a href="/about.html">About</a>
-                <a href="/contact.html">Contact</a>
-                <a href="/archive.html">Archive</a>
-            </nav>
         </header>
 
         <main role="main">
-            <h1>$title$</h1>
-            $body$
+            <div class="wrapper">
+                <h1>$title$</h1>
+                $body$
+            </div>
         </main>
 
         <footer>
