@@ -18,7 +18,7 @@ Quite similar explanation was given in [Spring docs](https://docs.spring.io/spri
 
 So, what I could understand is that I should use separate transactional ids for each partition consumed, to enable proper zombie fencing and prevent duplicate messages. Next point will present the scenario, where this is necessary.
 
-The assumption is that the reader already knows about Kafka basics (eg partitions, consumer groups) and has read about Kafka transactions on Confluent's blog.
+The assumption is that the reader already knows about Kafka basics (eg partitions, consumer groups) and has read about Kafka transactions on Confluent's blog. Watching this video is also recommended: [Introducing exactly once semantics in Apache Kafka](https://www.confluent.io/online-talk/introducing-exactly-once-semantics-in-apache-kafka/).
 
 ## 2. Failure of transactions caused by invalid usage
 
