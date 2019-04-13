@@ -43,7 +43,7 @@
 <p>2.1.11 Transactional Id When a transaction is started by the listener container, the transactional.id is now the transactionIdPrefix appended with &lt;group.id&gt;.&lt;topic&gt;.&lt;partition&gt;. This is to allow proper fencing of zombies as described here.</p>
 </blockquote>
 <p>So, what I could understand is that I should use separate transactional ids for each partition consumed, to enable proper zombie fencing and prevent duplicate messages. Next point will present the scenario, where this is necessary.</p>
-<p>The assumption is that the reader already knows about Kafka basics (eg partitions, consumer groups) and has read about Kafka transactions on Confluent’s blog.</p>
+<p>The assumption is that the reader already knows about Kafka basics (eg partitions, consumer groups) and has read about Kafka transactions on Confluent’s blog. Watching this video is also recommended: <a href="https://www.confluent.io/online-talk/introducing-exactly-once-semantics-in-apache-kafka/">Introducing exactly once semantics in Apache Kafka</a>.</p>
 <h2 id="failure-of-transactions-caused-by-invalid-usage">2. Failure of transactions caused by invalid usage</h2>
 <p>Here is the setup in which this fault might occur:</p>
 <p><img src="../images/2.0_diagram_v2.png" /></p>
