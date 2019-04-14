@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="x-ua-compatible" content="ie=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Yet Another Programmer's Blog - Kafka transactions - the tricky bits</title>
+        <link rel="stylesheet" href="../css/default.css" />
+        <link rel="stylesheet" href="../css/syntax.css" />
+    </head>
+    <body>
+        <header>
+            <div class="wrapper">
+                <div class="logo">
+                    <a href="../">Yet Another Programmer's Blog</a>
+                </div>
+                <nav>
+                    <a href="../">Home</a>
+                    <a href="../about.html">About</a>
+                    <a href="../archive.html">Archive</a>
+                </nav>
+            </div>
+        </header>
+
+        <main role="main">
+            <div class="wrapper">
+                <h1>Kafka transactions - the tricky bits</h1>
+                <article>
+    <section class="header">
+        Posted on April 13, 2019
+        
+    </section>
+    <section>
+        <p>Why should you use separate transactional Kafka producer per consumer group and partition?</p>
+<h2 id="intro">1. Intro</h2>
+<p>This blog post attempts to explain in detail one thing that was at first for me unclear. For example in a <a href="https://www.confluent.io/blog/transactions-apache-kafka/">Confluent article about Kafka transactions</a>, a short description of the problem can be found:</p>
+<blockquote>
+<p>For instance, in a distributed stream processing application, suppose topic-partition tp0 was originally processed by transactional.id T0. If, at some point later, it could be mapped to another producer with transactional.id T1, there would be no fencing between T0 and T1. So it is possible for messages from tp0 to be reprocessed, violating the exactly once processing guarantee.</p>
+<p>Practically, one would either have to store the mapping between input partitions and transactional.ids in an external store, or have some static encoding of it.</p>
+</blockquote>
+<p>Quite similar explanation was given in <a href="https://docs.spring.io/spring-kafka/reference/#transactional-id">Spring docs</a>:</p>
+<blockquote>
+<p>2.1.11 Transactional Id When a transaction is started by the listener container, the transactional.id is now the transactionIdPrefix appended with &lt;group.id&gt;.&lt;topic&gt;.&lt;partition&gt;. This is to allow proper fencing of zombies as described here.</p>
+</blockquote>
+<p>So, what I could understand is that I should use separate transactional ids for each partition consumed, to enable proper zombie fencing and prevent duplicate messages. Next point will present the scenario, where this is necessary.</p>
+<p>The assumption is that the reader already knows about Kafka basics (eg partitions, consumer groups) and has read about Kafka transactions on Confluent’s blog. Watching this video is also recommended: <a href="https://www.confluent.io/online-talk/introducing-exactly-once-semantics-in-apache-kafka/">Introducing exactly once semantics in Apache Kafka</a>.</p>
+<h2 id="failure-of-transactions-caused-by-invalid-usage">2. Failure of transactions caused by invalid usage</h2>
+<p>Here is the setup in which this fault might occur:</p>
+<p><img src="../images/2.0_diagram_v2.png" /></p>
+<p>In this case, following scenario will cause problems, we start with standard initialization of transactions and pulling the message for latest offset:</p>
+<p><img src="../images/2.1_pull_msg.png" /></p>
+<p>Then, we proceed to processing the message. We start a transaction, to send the output message atomically with updating the offset, first sending the offset:</p>
+<p><img src="../images/2.2_start_transaction_1.png" /></p>
+<p>Just after sending the offset, our worker hangs, e.g. due to long GC pause, and then the consumer group coordinator reassigns the partition to another worker:</p>
+<p><img src="../images/2.3_rebalance.png" /></p>
+<p>As a result, another worker goes through similar initialization process, as previous worker. The problem is that previous transaction is not yet committed, so the offset update sent by worker 1 is ignored. And now, worker 2 is starting its own transaction:</p>
+<p><img src="../images/2.4_start_transaction_2.png" /></p>
+<p>Then, worker 2 sends processing results to the output topic and commits its transaction:</p>
+<p><img src="../images/2.5_wakes_up.png" /></p>
+<p>When worker 2 is already done, worker 1 wakes up from its long GC pause, unaware of what happened in the meantime, this “nap” seemed like just few milliseconds… so it continues with its own transaction and sends the output message:</p>
+<p><img src="../images/2.6_duplicate_msg.png" /></p>
+<p>After worker 1 commits the transaction there is a duplicated message in the output topic, so our exactly-once guarantee does not hold.</p>
+<h2 id="why-kafka-transactions-didnt-work-correctly-in-this-situation">3. Why Kafka transactions didn’t work correctly in this situation?</h2>
+<p>At the moment when worker 2 is assigned the input partition from worker 1 and initializes transaction, the Kafka transaction for worker 2 should be aborted. Overall, this is how it should look like inside the Kafka’s topic:</p>
+<pre><code>$ ./bin/kafka-dump-log.sh --files /tmp/kafka-logs/topic-test-0/00000000000000000000.log \
+&gt; --print-data-log
+Dumping /tmp/kafka-logs/topic-test-0/00000000000000000000.log
+Starting offset: 0
+offset: 0 ... producerId: 0 producerEpoch: 5 ... payload: thisIsMessageValue1
+offset: 1 ... producerId: 0 producerEpoch: 6 ... endTxnMarker: ABORT coordinatorEpoch: 0
+offset: 2 ... producerId: 0 producerEpoch: 7 ... payload: thisIsMessageValue2
+offset: 3 ... producerId: 0 producerEpoch: 7 ... endTxnMarker: COMMIT coordinatorEpoch: 0</code></pre>
+<p>When we look closer, we can notice that all the messages were sent with the same <code>producerId</code>. This is the code used to get the above:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode java"><code class="sourceCode java"><a class="sourceLine" id="cb2-1" title="1"><span class="bu">Map</span>&lt;<span class="bu">String</span>, <span class="bu">Object</span>&gt; configs = <span class="kw">new</span> <span class="bu">HashMap</span>&lt;&gt;();</a>
+<a class="sourceLine" id="cb2-2" title="2">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">BOOTSTRAP_SERVERS_CONFIG</span>, <span class="st">&quot;localhost:9092&quot;</span>);</a>
+<a class="sourceLine" id="cb2-3" title="3">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">KEY_SERIALIZER_CLASS_CONFIG</span>, StringSerializer.<span class="fu">class</span>);</a>
+<a class="sourceLine" id="cb2-4" title="4">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">VALUE_SERIALIZER_CLASS_CONFIG</span>, StringSerializer.<span class="fu">class</span>);</a>
+<a class="sourceLine" id="cb2-5" title="5">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">TRANSACTIONAL_ID_CONFIG</span>, <span class="st">&quot;anyValue&quot;</span>);</a>
+<a class="sourceLine" id="cb2-6" title="6"></a>
+<a class="sourceLine" id="cb2-7" title="7">KafkaProducer&lt;<span class="bu">String</span>, <span class="bu">String</span>&gt; producer = <span class="kw">new</span> KafkaProducer&lt;&gt;(configs);</a>
+<a class="sourceLine" id="cb2-8" title="8">producer.<span class="fu">initTransactions</span>();</a>
+<a class="sourceLine" id="cb2-9" title="9">producer.<span class="fu">beginTransaction</span>();</a>
+<a class="sourceLine" id="cb2-10" title="10"></a>
+<a class="sourceLine" id="cb2-11" title="11">producer.<span class="fu">send</span>(<span class="kw">new</span> ProducerRecord&lt;&gt;(<span class="st">&quot;topic-test&quot;</span>, <span class="st">&quot;thisIsMessageKey&quot;</span>, <span class="st">&quot;thisIsMessageValue1&quot;</span>)).<span class="fu">get</span>();</a>
+<a class="sourceLine" id="cb2-12" title="12">        </a>
+<a class="sourceLine" id="cb2-13" title="13">KafkaProducer&lt;<span class="bu">String</span>, <span class="bu">String</span>&gt; producer2 = <span class="kw">new</span> KafkaProducer&lt;&gt;(configs);</a>
+<a class="sourceLine" id="cb2-14" title="14">producer2.<span class="fu">initTransactions</span>();</a>
+<a class="sourceLine" id="cb2-15" title="15">producer2.<span class="fu">beginTransaction</span>();</a>
+<a class="sourceLine" id="cb2-16" title="16"></a>
+<a class="sourceLine" id="cb2-17" title="17">producer2.<span class="fu">send</span>(<span class="kw">new</span> ProducerRecord&lt;&gt;(<span class="st">&quot;topic-test&quot;</span>, <span class="st">&quot;thisIsMessageKey&quot;</span>, <span class="st">&quot;thisIsMessageValue2&quot;</span>)).<span class="fu">get</span>();</a>
+<a class="sourceLine" id="cb2-18" title="18"></a>
+<a class="sourceLine" id="cb2-19" title="19">producer2.<span class="fu">commitTransaction</span>();</a></code></pre></div>
+<p>If, however, we change the producer’s transactional id:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode java"><code class="sourceCode java"><a class="sourceLine" id="cb3-1" title="1">...</a>
+<a class="sourceLine" id="cb3-2" title="2">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">TRANSACTIONAL_ID_CONFIG</span>, <span class="st">&quot;differentValue&quot;</span>);</a>
+<a class="sourceLine" id="cb3-3" title="3">KafkaProducer&lt;<span class="bu">String</span>, <span class="bu">String</span>&gt; producer2 = <span class="kw">new</span> KafkaProducer&lt;&gt;(configs);</a>
+<a class="sourceLine" id="cb3-4" title="4">producer2.<span class="fu">initTransactions</span>();</a>
+<a class="sourceLine" id="cb3-5" title="5">...</a></code></pre></div>
+<p>Then, we will get the below output:</p>
+<pre><code>$ ./bin/kafka-dump-log.sh --files /tmp/kafka-logs/topic-test-0/00000000000000000000.log \
+&gt; --print-data-log
+Dumping /tmp/kafka-logs/topic-test-0/00000000000000000000.log
+Starting offset: 0
+offset: 0 ... producerId: 0 producerEpoch: 0 ... payload: thisIsMessageValue1
+offset: 1 ... producerId: 1 producerEpoch: 0 ... payload: thisIsMessageValue2
+offset: 2 ... producerId: 1 producerEpoch: 0 ... endTxnMarker: COMMIT coordinatorEpoch: 0</code></pre>
+<!--
+$ ./bin/kafka-dump-log.sh --files /tmp/kafka-logs/topic-test-0/00000000000000000000.log --print-data-log
+Dumping /tmp/kafka-logs/topic-test-0/00000000000000000000.log
+Starting offset: 0
+offset: 0 position: 0 CreateTime: 1555164281457 isvalid: true keysize: 16 valuesize: 19 magic: 2 compresscodec: NONE producerId: 0 producerEpoch: 0 sequence: 0 isTransactional: true headerKeys: [] key: thisIsMessageKey payload: thisIsMessageValue1
+offset: 1 position: 103 CreateTime: 1555164281695 isvalid: true keysize: 16 valuesize: 19 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: 0 isTransactional: true headerKeys: [] key: thisIsMessageKey payload: thisIsMessageValue2
+offset: 2 position: 206 CreateTime: 1555164281755 isvalid: true keysize: 4 valuesize: 6 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: -1 isTransactional: true headerKeys: [] endTxnMarker: COMMIT coordinatorEpoch: 0
+-->
+<p>Which looks similar to our scenario with 2 parallel workers. What happens above is a failure of the zombie fencing mechanism, which is described in the <a href="https://www.confluent.io/blog/transactions-apache-kafka/">Confluent’s article on Kafka transactions</a>.</p>
+<h2 id="fixing-kafka-zombie-fencing-for-parallel-processing">4. Fixing Kafka zombie fencing for parallel processing</h2>
+<p>The solution to this problem is already mentioned in the docs and articles:</p>
+<blockquote>
+<p>Practically, one would either have to store the mapping between input partitions and transactional.ids in an external store, or have some static encoding of it.</p>
+</blockquote>
+<p>To avoid handling an external store, we will use a static encoding the same as in spring-kafka:</p>
+<blockquote>
+<p>the transactional.id is now the transactionIdPrefix appended with &lt;group.id&gt;.&lt;topic&gt;.&lt;partition&gt;.</p>
+</blockquote>
+<p>The drawback is that we will require <strong>separate transactional producer for each partition</strong>, but now we will be able to handle the last failure scenario correctly. This can be observed at the moment, when worker 2 initiates its transactional producer:</p>
+<p><img src="../images/4.0_abort.png" /></p>
+<p>And then, when worker 1 wakes up:</p>
+<p><img src="../images/4.1_fenced.png" /></p>
+<p>Which results in receiving this exception within application:</p>
+<pre><code>org.apache.kafka.common.errors.ProducerFencedException: Producer attempted an operation with 
+an old epoch. Either there is a newer producer with the same transactionalId, or the producer's 
+transaction has been expired by the broker.</code></pre>
+<p>Zombie fencing works properly now, thanks to using the same transactional id.</p>
+<h2 id="summary">5. Summary</h2>
+<p>Handling transactions between producer sessions has its own nuances. One of our decisions, as Kafka clients, is to pick right transactional ids for producer, to enable proper zombie fencing. Hopefully, the example given above makes it clear when should we use separate transactional id for each consumed partition. Only when consumer rebalance can result in assigning partitions to different workers those separate ids should be used.</p>
+    </section>
+</article>
+
+            </div>
+        </main>
+
+        <footer>
+            Site proudly generated by
+            <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+        </footer>
+    </body>
+</html>
