@@ -115,6 +115,9 @@ img {
     padding-bottom: 1em;
 }
 
+article {
+    word-wrap: break-word;
+}
 blockquote {
     display: block;
     max-width: 100%;
