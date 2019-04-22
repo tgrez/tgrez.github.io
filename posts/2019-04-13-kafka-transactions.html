@@ -63,7 +63,11 @@
 <p><img src="../images/2.6_duplicate_msg.png" /></p>
 <p>After worker 1 commits the transaction there is a duplicated message in the output topic, so our exactly-once guarantee does not hold.</p>
 <h2 id="why-kafka-transactions-didnt-work-correctly-in-this-situation">3. Why Kafka transactions didn’t work correctly in this situation?</h2>
-<p>At the moment when worker 2 is assigned the input partition from worker 1 and initializes transaction, the Kafka transaction for worker 1 should be aborted. The mechanism used for that in Kafka is called zombie fencing, which is described in the <a href="https://www.confluent.io/blog/transactions-apache-kafka/">Confluent’s article on Kafka transactions</a>.</p>
+<p>At the moment when worker 2 is assigned the input partition from worker 1 and initializes transaction, the Kafka transaction for worker 1 should be aborted. The mechanism used for that in Kafka is called zombie fencing, which is described in the <a href="https://www.confluent.io/blog/transactions-apache-kafka/">Confluent’s article on Kafka transactions</a>, the most interesting part is:</p>
+<blockquote>
+<p>The API requires that the first operation of a transactional producer should be to explicitly register its transactional.id with the Kafka cluster. When it does so, the Kafka broker checks for open transactions with the given transactional.id and completes them. It also increments an epoch associated with the transactional.id. The epoch is an internal piece of metadata stored for every transactional.id.</p>
+<p>Once the epoch is bumped, any <strong>producers with same transactional.id and an <em>older epoch</em> are considered zombies and are fenced off</strong>, ie. future transactional writes from those producers are rejected.</p>
+</blockquote>
 <p>Let’s see on simplified example how zombie fencing works in practice. Overall, this is how it should look like inside the Kafka’s topic:</p>
 <pre><code>$ ./bin/kafka-dump-log.sh --files /tmp/kafka-logs/topic-test-0/00000000000000000000.log \
 &gt; --print-data-log
@@ -73,7 +77,7 @@ offset: 0 ... producerId: 0 producerEpoch: 5 ... payload: thisIsMessageValue1
 offset: 1 ... producerId: 0 producerEpoch: 6 ... endTxnMarker: ABORT coordinatorEpoch: 0
 offset: 2 ... producerId: 0 producerEpoch: 7 ... payload: thisIsMessageValue2
 offset: 3 ... producerId: 0 producerEpoch: 7 ... endTxnMarker: COMMIT coordinatorEpoch: 0</code></pre>
-<p>When we look closer, we can notice that all the messages were sent with the same <code>producerId</code>. This is the code used to get the above:</p>
+<p>When we look closer, we can notice that all the messages were sent with the same <code>producerId</code> and the epoch numbers are incremented. This is the code used to get the above:</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode java"><code class="sourceCode java"><a class="sourceLine" id="cb2-1" title="1"><span class="bu">Map</span>&lt;<span class="bu">String</span>, <span class="bu">Object</span>&gt; configs = <span class="kw">new</span> <span class="bu">HashMap</span>&lt;&gt;();</a>
 <a class="sourceLine" id="cb2-2" title="2">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">BOOTSTRAP_SERVERS_CONFIG</span>, <span class="st">&quot;localhost:9092&quot;</span>);</a>
 <a class="sourceLine" id="cb2-3" title="3">configs.<span class="fu">put</span>(ProducerConfig.<span class="fu">KEY_SERIALIZER_CLASS_CONFIG</span>, StringSerializer.<span class="fu">class</span>);</a>
@@ -115,7 +119,7 @@ offset: 0 position: 0 CreateTime: 1555164281457 isvalid: true keysize: 16 values
 offset: 1 position: 103 CreateTime: 1555164281695 isvalid: true keysize: 16 valuesize: 19 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: 0 isTransactional: true headerKeys: [] key: thisIsMessageKey payload: thisIsMessageValue2
 offset: 2 position: 206 CreateTime: 1555164281755 isvalid: true keysize: 4 valuesize: 6 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: -1 isTransactional: true headerKeys: [] endTxnMarker: COMMIT coordinatorEpoch: 0
 -->
-<p>There is no ABORT marker, so first producer could still commit its transaction. This situation is similar to our scenario with 2 parallel workers. There was also a transaction in progress, which should be aborted, but wasn’t. Does this mean we should use the same transactional id for both workers? Not quite.</p>
+<p>There is no ABORT marker, so first producer could still commit its transaction. Epoch numbers are not incremented. This situation is similar to our scenario with 2 parallel workers. There was also a transaction in progress, which should be aborted, but wasn’t. Does this mean we should use the same transactional id for both workers? Not quite.</p>
 <h2 id="fixing-kafka-zombie-fencing-for-parallel-processing">4. Fixing Kafka zombie fencing for parallel processing</h2>
 <p>To ensure proper functioning of zombie fencing in our original scenario we should make sure that msg A “is processed” by the same transactional id, no matter on which worker this is actually happening. The solution to this problem is already mentioned in the docs and articles:</p>
 <blockquote>
