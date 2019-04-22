@@ -54,11 +54,11 @@ After worker 1 commits the transaction there is a duplicated message in the outp
 
 ## 3. Why Kafka transactions didn't work correctly in this situation?
 
-At the moment when worker 2 is assigned the input partition from worker 1 and initializes transaction, the Kafka transaction for worker 1 should be aborted. The mechanism used for that in Kafka is called zombie fencing, which is described in the [Confluent's article on Kafka transactions](https://www.confluent.io/blog/transactions-apache-kafka/).
+At the moment when worker 2 is assigned the input partition from worker 1 and initializes transaction, the Kafka transaction for worker 1 should be aborted. The mechanism used for that in Kafka is called zombie fencing, which is described in the [Confluent's article on Kafka transactions](https://www.confluent.io/blog/transactions-apache-kafka/), the most interesting part is:
 
-
-
-
+>The API requires that the first operation of a transactional producer should be to explicitly register its transactional.id with the Kafka cluster. When it does so, the Kafka broker checks for open transactions with the given transactional.id and completes them. It also increments an epoch associated with the transactional.id. The epoch is an internal piece of metadata stored for every transactional.id.
+>
+>Once the epoch is bumped, any **producers with same transactional.id and an *older epoch* are considered zombies and are fenced off**, ie. future transactional writes from those producers are rejected.
 
 Let's see on simplified example how zombie fencing works in practice. Overall, this is how it should look like inside the Kafka's topic:
 
@@ -73,7 +73,7 @@ offset: 2 ... producerId: 0 producerEpoch: 7 ... payload: thisIsMessageValue2
 offset: 3 ... producerId: 0 producerEpoch: 7 ... endTxnMarker: COMMIT coordinatorEpoch: 0
 ```
 
-When we look closer, we can notice that all the messages were sent with the same `producerId`. This is the code used to get the above:
+When we look closer, we can notice that all the messages were sent with the same `producerId` and the epoch numbers are incremented. This is the code used to get the above:
 
 ```Java
 Map<String, Object> configs = new HashMap<>();
@@ -126,7 +126,7 @@ offset: 0 position: 0 CreateTime: 1555164281457 isvalid: true keysize: 16 values
 offset: 1 position: 103 CreateTime: 1555164281695 isvalid: true keysize: 16 valuesize: 19 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: 0 isTransactional: true headerKeys: [] key: thisIsMessageKey payload: thisIsMessageValue2
 offset: 2 position: 206 CreateTime: 1555164281755 isvalid: true keysize: 4 valuesize: 6 magic: 2 compresscodec: NONE producerId: 1 producerEpoch: 0 sequence: -1 isTransactional: true headerKeys: [] endTxnMarker: COMMIT coordinatorEpoch: 0
 -->
-There is no ABORT marker, so first producer could still commit its transaction. This situation is similar to our scenario with 2 parallel workers. There was also a transaction in progress, which should be aborted, but wasn't. Does this mean we should use the same transactional id for both workers? Not quite.
+There is no ABORT marker, so first producer could still commit its transaction. Epoch numbers are not incremented. This situation is similar to our scenario with 2 parallel workers. There was also a transaction in progress, which should be aborted, but wasn't. Does this mean we should use the same transactional id for both workers? Not quite.
 
 ## 4. Fixing Kafka zombie fencing for parallel processing
 
@@ -161,5 +161,6 @@ Zombie fencing works properly now, thanks to using the same transactional id.
 ## 5. Summary
 
 Handling transactions between producer sessions has its own nuances. One of our decisions, as Kafka clients, is to pick right transactional ids for producer to enable proper zombie fencing. Hopefully, the example given above makes it clear when should we use separate transactional id for each consumed partition. Only when consumer rebalance can result in assigning partitions to different workers, those separate ids should be used.
+
 
 *Special thanks to Paweł Kubit for proofreading.*
