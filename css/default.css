@@ -46,6 +46,8 @@ header div.wrapper div.topbar {
 header nav {
     display: inline-block;
     align-self: flex-end;
+    margin-left: 70px;
+    text-align: right;
 }
 
 header nav a {
