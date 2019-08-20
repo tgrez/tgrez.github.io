@@ -1,5 +1,5 @@
 ---
-title: Kafka transactions - the tricky bits
+title: When Kafka transactions might fail
 ---
 Why should you use separate transactional Kafka producer per consumer group and partition?
 
@@ -164,3 +164,5 @@ Handling transactions between producer sessions has its own nuances. One of our 
 
 
 *Special thanks to Paweł Kubit for proofreading.*
+
+*Update 21.08.19 - changed title*
