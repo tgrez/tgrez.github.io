@@ -4,7 +4,7 @@
         <meta charset="utf-8">
         <meta http-equiv="x-ua-compatible" content="ie=edge">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Tomasz Guz - Kafka transactions - the tricky bits</title>
+        <title>Tomasz Guz - When Kafka transactions might fail</title>
         <link rel="stylesheet" href="../css/default.css" />
         <link rel="stylesheet" href="../css/syntax.css" />
     </head>
@@ -26,7 +26,7 @@
 
         <main role="main">
             <div class="wrapper">
-                <h1>Kafka transactions - the tricky bits</h1>
+                <h1>When Kafka transactions might fail</h1>
                 <article>
     <section class="header">
         Posted on April 13, 2019
@@ -142,6 +142,7 @@ transaction has been expired by the broker.</code></pre>
 <h2 id="summary">5. Summary</h2>
 <p>Handling transactions between producer sessions has its own nuances. One of our decisions, as Kafka clients, is to pick right transactional ids for producer to enable proper zombie fencing. Hopefully, the example given above makes it clear when should we use separate transactional id for each consumed partition. Only when consumer rebalance can result in assigning partitions to different workers, those separate ids should be used.</p>
 <p><em>Special thanks to Paweł Kubit for proofreading.</em></p>
+<p><em>Update 21.08.19 - changed title</em></p>
     </section>
 </article>
 
