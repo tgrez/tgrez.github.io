@@ -6,7 +6,7 @@ title: Simulating network failures at syscall level
 
 A short story of when checking one small property leads you deep down into the rabbit hole. The goal was to check high-level fault-tolerance property and I ended up changing CPU register to get the exact failure I wanted and exactly when I wanted.
 
-For those familiar with the topic of syscall interception it could still be entertaining, as it introduces a new tool for the job.
+For those familiar with the topic of syscall interception it could still be entertaining, as it presents a new tool for the job.
 
 ### Kafka producer idempotence
 
