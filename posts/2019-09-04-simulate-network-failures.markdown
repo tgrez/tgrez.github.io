@@ -40,11 +40,11 @@ Short answer:
 
 At least that is, what its [GitHub page](https://github.com/nh2/hatrace) says. For those of you, who wonder what is `strace`, it's a Linux utility tool for tracing system calls. Going futher, a system call (in short syscall) is a way for your application to use the interface of the Linux kernel to perform actions such as: reading a file from hard disk, creating network sockets, sending data through sockets, process creation and management, memory management, in short any IO operation your application uses.
 
-Hatrace is an open-source project written in Haskell and led by [Niklas](https://github.com/nh2) with help of [Kirill](https://github.com/qrilka). They were very helpful when introducing me into the project at ZuriHac. Contributing to Hatrace is far easier than I initially expected and there is still plenty of work left to be done. You can contact me if you need help with starting out.
+Hatrace is an open-source project written in Haskell and led by [Niklas](https://github.com/nh2) with help of [Kirill](https://github.com/qrilka). They were very helpful when introducing me into the project at ZuriHac. Contributing to Hatrace is also far easier than I initially expected and there is still plenty of work left to be done, as the project is still in its infancy. You can contact me if you need help with starting out.
 
 Hatrace includes:
 
-* an executable to trace those syscalls (similarly to `strace`)
+* an executable to trace syscalls (similarly to `strace`)
 * a library for processing syscalls in a programmatic way
 
 So, any IO operation made by your application can be traced and optionally modified using Hatrace library. You don't even need to have the source code:
@@ -211,7 +211,7 @@ long __syscall_ret(unsigned long r)
 }
 ```
 
-In other words, we could also set the error value like that:
+In other words, in Hatrace we perform the syscall modification before `libc` translates error to `errno`, so we could also set the error value like that:
 
 ```Haskell
 setExitedSyscallResult pid (Right $ fromIntegral (-110 :: CULong))
