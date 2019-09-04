@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="x-ua-compatible" content="ie=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Tomasz Guz - Simulating network failures at syscall level</title>
+        <link rel="stylesheet" href="../css/default.css" />
+        <link rel="stylesheet" href="../css/syntax.css" />
+    </head>
+    <body>
+        <header>
+            <div class="wrapper">
+                <div class="topbar">
+                    <div class="logo">
+                        <a href="../">Tomasz Guz</a>
+                    </div>
+                    <nav>
+                        <a href="../">Home</a>
+                        <a href="https://github.com/tgrez">GitHub</a>
+                        <a href="https://www.linkedin.com/in/tomasz-guz-333088109/">LinkedIn</a>
+                    </nav>
+                </div>
+            </div>
+        </header>
+
+        <main role="main">
+            <div class="wrapper">
+                <h1>Simulating network failures at syscall level</h1>
+                <article>
+    <section class="header">
+        Posted on September  4, 2019
+        
+    </section>
+    <section>
+        <h2 id="intro">1. Intro</h2>
+<p>A short story of when checking one small property leads you deep down into the rabbit hole. The goal was to check high-level fault-tolerance property while sending messages to Kafka and I ended up changing the CPU register to get the exact failure I wanted and exactly when I wanted.</p>
+<p>For those familiar with the topic of syscall interception it could still be entertaining, as it presents a new tool for the job.</p>
+<h2 id="kafka-producer-idempotence">2. Kafka producer idempotence</h2>
+<p>All of this started, when I wanted to setup Kafka client with a new feature introduced in librdkafka 1.0: idempotent producer. Here is a definition of this feature, as described in <a href="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/">Confluent blog</a>:</p>
+<blockquote>
+<p>An idempotent operation is one which can be performed many times without causing a different effect than only being performed once. The producer send operation is now idempotent. In the event of an error that causes a producer retry, the same message — which is still sent by the producer multiple times — will only be written to the Kafka log on the broker once.</p>
+</blockquote>
+<p>Setting up Kafka producer to use idempotence is pretty straightforward, just a <a href="https://github.com/edenhill/librdkafka/blob/v1.0.0/CONFIGURATION.md">config entry</a> <em>enable.idempotence=true</em> needs to be provided. Those of us, who doubt that it works properly (“is it really all that needs to be set?” “did I include a correct dependency version?”), would probably want some additional verification.</p>
+<p>Under normal operation, turning this feature on does not change much. The only observable effect is some additional bits in the serialized message:</p>
+<blockquote>
+<p>How does this feature work? Under the covers it works in a way similar to TCP; each batch of messages sent to Kafka will contain a <strong>sequence number</strong> which the broker will use to dedupe any duplicate send.</p>
+</blockquote>
+<p>At this point, we could just sniff at network traffic and check that those sequence numbers are actually set. Based on that it could be deduced that producer idempotence works. Still, the dedupe mechanism has not been observed. Ideally, we would have a test with two scenarios: with and without idempotence enabled, where we could observe duplicated messages in one scenario and no duplicates in the other.</p>
+<p>How can we check deduplication (ideally without changing our application’s code)?</p>
+<p>Here are the options I have found so far:</p>
+<ul>
+<li>Killing TCP connections (or the broker itself) - a large number of messages is sent. During sending, TCP connections are killed (eg using <code>tcpkill</code>) or the broker itself is killed. See <a href="https://jack-vanlightly.com/blog/2018/10/25/testing-producer-deduplication-in-apache-kafka-and-apache-pulsar">blog post</a>.</li>
+<li>Socket network emulation - either by using callbacks (requires modifying our app code) or by preloading a library for wrapping network calls, as can be done in <a href="https://github.com/edenhill/librdkafka/blob/73295a702cd1c85c11749ade500d713db7099cca/tests/sockem.c#L200">tests for librdkafka</a>.</li>
+<li>Hatrace - modifying those system calls, which we want to fail.</li>
+</ul>
+<p>I chose Hatrace to verify Kafka producer idempotence.</p>
+<h2 id="what-is-hatrace">3. What is Hatrace?</h2>
+<p>Short answer:</p>
+<blockquote>
+<p>scriptable <code>strace</code></p>
+</blockquote>
+<p>At least that is, what its <a href="https://github.com/nh2/hatrace">GitHub page</a> says. For those of you, who wonder what is <code>strace</code>, it’s a Linux utility tool for tracing system calls. Going futher, a system call (in short syscall) is a way for your application to use the interface of the Linux kernel to perform actions such as: reading a file from hard disk, creating network sockets, sending data through sockets, process creation and management, memory management, in short any IO operation your application uses.</p>
+<p>Hatrace is an open-source project written in Haskell and led by <a href="https://github.com/nh2">Niklas</a> with help of <a href="https://github.com/qrilka">Kirill</a>. They were very helpful when introducing me into the project at ZuriHac. Contributing to Hatrace is also far easier than I initially expected and there is still plenty of work left to be done, as the project is still in its infancy. You can contact me if you need help with starting out.</p>
+<p>Hatrace includes:</p>
+<ul>
+<li>an executable to trace syscalls (similarly to <code>strace</code>)</li>
+<li>a library for processing syscalls in a programmatic way</li>
+</ul>
+<p>So, any IO operation made by your application can be traced and optionally modified using Hatrace library. You don’t even need to have the source code:</p>
+<p><img src="../images/fault-inject.png" /></p>
+<p>By changing syscalls we can inject a failure “from below”. From the application perspective there won’t be any difference between real and injected system call failure. There is no need to change the code and it could be used for any application, any language or virtual machine.</p>
+<p>It should be noted that <code>strace</code> also enables modification of syscalls using <code>-e inject</code>, but its abilities are limited by its executable syntax. For example, we can change the result of syscalls, but there is no programmatic way to control which syscalls should be changed.</p>
+<p>The advantage of Hatrace over the other approaches described above is that it enables precise introduction of failure into syscalls. There are other ways to achieve this precision in overriding syscall results: <a href="http://samanbarghi.com/blog/2014/09/05/how-to-wrap-a-system-call-libc-function-in-linux/">1</a>, <a href="https://github.com/pmem/syscall_intercept">2</a>, <a href="https://blog.trailofbits.com/2019/01/17/how-to-write-a-rootkit-without-really-trying/">3</a>. Those mainly involve using the <code>LD_PRELOAD</code> trick and wrapping <code>glibc</code> calls. This approach has its own limitations. For example, <a href="https://stackoverflow.com/questions/55735864/how-does-golang-make-system-calls">Go uses syscalls</a> directly on Linux, without depending on <code>glibc</code>. The other drawback is a necessity to use a lower-level language, and even though <a href="https://www.deconstructconf.com/2017/joe-damato-all-programmers-must-learn-c-and-assembly">all programmers must learn c</a>, I still prefer to write my test cases in a higher level language.</p>
+<h2 id="hatrace-in-practice">4. Hatrace in practice</h2>
+<h3 id="running-test-cases">4.1 Running test cases</h3>
+<p>This is the code used to execute test cases in two scenarios:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb1-1" title="1"><span class="ot">spec ::</span> <span class="dt">Spec</span></a>
+<a class="sourceLine" id="cb1-2" title="2">spec <span class="fu">=</span> around_ withKafka <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-3" title="3">  describe <span class="st">&quot;kafka producer without idempotence&quot;</span> <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-4" title="4">    it <span class="st">&quot;sends duplicate messages on timeouts&quot;</span> <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-5" title="5">      <span class="kw">let</span> enableIdempotence <span class="fu">=</span> <span class="dt">False</span></a>
+<a class="sourceLine" id="cb1-6" title="6">      msgs <span class="ot">&lt;-</span> runProducerTestCase enableIdempotence</a>
+<a class="sourceLine" id="cb1-7" title="7">      msgs <span class="ot">`shouldSatisfy`</span> (\<span class="kw">case</span></a>
+<a class="sourceLine" id="cb1-8" title="8">                               <span class="dt">Right</span> messages <span class="ot">-&gt;</span> <span class="fu">length</span> messages <span class="fu">==</span> <span class="dv">7</span></a>
+<a class="sourceLine" id="cb1-9" title="9">                               <span class="dt">Left</span> _ <span class="ot">-&gt;</span> <span class="dt">False</span></a>
+<a class="sourceLine" id="cb1-10" title="10">                           )</a>
+<a class="sourceLine" id="cb1-11" title="11"></a>
+<a class="sourceLine" id="cb1-12" title="12">  describe <span class="st">&quot;kafka producer with idempotence enabled&quot;</span> <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-13" title="13">    it <span class="st">&quot;sends duplicates, but they are discarded on the broker&quot;</span> <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb1-14" title="14">      <span class="kw">let</span> enableIdempotence <span class="fu">=</span> <span class="dt">True</span></a>
+<a class="sourceLine" id="cb1-15" title="15">      msgs <span class="ot">&lt;-</span> runProducerTestCase enableIdempotence</a>
+<a class="sourceLine" id="cb1-16" title="16">      msgs <span class="ot">`shouldSatisfy`</span> (\<span class="kw">case</span></a>
+<a class="sourceLine" id="cb1-17" title="17">                               <span class="dt">Right</span> messages <span class="ot">-&gt;</span> <span class="fu">length</span> messages <span class="fu">==</span> <span class="dv">5</span></a>
+<a class="sourceLine" id="cb1-18" title="18">                               <span class="dt">Left</span> _ <span class="ot">-&gt;</span> <span class="dt">False</span></a>
+<a class="sourceLine" id="cb1-19" title="19">                           )</a></code></pre></div>
+<p>Those tests use Kafka and ZooKeeper, which are deployed to Docker in <code>withKafka</code>. Here is the actual execution of each test case (some hacks will follow):</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb2-1" title="1"><span class="ot">runProducerTestCase ::</span> <span class="dt">Bool</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> (<span class="dt">Either</span> <span class="dt">KafkaError</span> [<span class="dt">Maybe</span> <span class="dt">B.ByteString</span>])</a>
+<a class="sourceLine" id="cb2-2" title="2">runProducerTestCase enableIdempotence <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb2-3" title="3">  execPath <span class="ot">&lt;-</span> takeDirectory <span class="fu">&lt;$&gt;</span> getExecutablePath</a>
+<a class="sourceLine" id="cb2-4" title="4">  <span class="kw">let</span> cmd <span class="fu">=</span> execPath <span class="fu">&lt;/&gt;</span> <span class="st">&quot;../idempotent-producer-exe/idempotent-producer-exe&quot;</span></a>
+<a class="sourceLine" id="cb2-5" title="5">  argv <span class="ot">&lt;-</span> procToArgv cmd [brokerAddress, kafkaTopic, <span class="fu">show</span> messageCount, <span class="fu">show</span> enableIdempotence]</a>
+<a class="sourceLine" id="cb2-6" title="6">  counter <span class="ot">&lt;-</span> newIORef (<span class="dv">0</span><span class="ot"> ::</span> <span class="dt">Int</span>)</a>
+<a class="sourceLine" id="cb2-7" title="7">  void <span class="fu">$</span> <span class="fu">flip</span> runReaderT counter <span class="fu">$</span></a>
+<a class="sourceLine" id="cb2-8" title="8">    sourceTraceForkExecvFullPathWithSink argv <span class="fu">$</span></a>
+<a class="sourceLine" id="cb2-9" title="9">      syscallExitDetailsOnlyConduit <span class="fu">.|</span></a>
+<a class="sourceLine" id="cb2-10" title="10">      changeSendmsgSyscallResult <span class="fu">.|</span></a>
+<a class="sourceLine" id="cb2-11" title="11">      CL.sinkNull</a>
+<a class="sourceLine" id="cb2-12" title="12">  msgs <span class="ot">&lt;-</span> consumeMessages</a>
+<a class="sourceLine" id="cb2-13" title="13">  printMessages msgs</a>
+<a class="sourceLine" id="cb2-14" title="14">  <span class="fu">pure</span> msgs</a></code></pre></div>
+<p>So, what happens in here is that in lines:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb3-1" title="1">  <span class="kw">let</span> cmd <span class="fu">=</span> execPath <span class="fu">&lt;/&gt;</span> <span class="st">&quot;../idempotent-producer-exe/idempotent-producer-exe&quot;</span></a>
+<a class="sourceLine" id="cb3-2" title="2">  argv <span class="ot">&lt;-</span> procToArgv cmd [brokerAddress, kafkaTopic, <span class="fu">show</span> messageCount, <span class="fu">show</span> enableIdempotence]</a></code></pre></div>
+<p>A command to be executed is build. Firstly, a path to executable is constructed relative to current test location - this is a hack to run main program directly from tests. And why do we need to start a separate process? Internally, Hatrace uses similar mechanism as <code>strace</code>, which is a <code>ptrace(2)</code> system call as described in its man page:</p>
+<blockquote>
+<p>The <code>ptrace()</code> system call provides a means by which <strong>one process</strong> (the “tracer”) may observe and control the execution of <strong>another process</strong> (the “tracee”), and examine and change the tracee’s memory and registers. It is primarily used to implement breakpoint debugging and system call tracing.</p>
+</blockquote>
+<h3 id="changing-syscall-result">4.2 Changing syscall result</h3>
+<p>Next, we provide the parameters for our Kafka producer and then we run it in:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb4-1" title="1">  void <span class="fu">$</span> <span class="fu">flip</span> runReaderT counter <span class="fu">$</span></a>
+<a class="sourceLine" id="cb4-2" title="2">    sourceTraceForkExecvFullPathWithSink argv <span class="fu">$</span></a>
+<a class="sourceLine" id="cb4-3" title="3">      syscallExitDetailsOnlyConduit <span class="fu">.|</span></a>
+<a class="sourceLine" id="cb4-4" title="4">      changeSendmsgSyscallResult <span class="fu">.|</span></a>
+<a class="sourceLine" id="cb4-5" title="5">      CL.sinkNull</a></code></pre></div>
+<p>This part above runs the executable and traces syscall events. With a Conduit pipeline we filter only exit-from-syscall events, as <code>ptrace</code> notifies us on syscall enter and exit. The “meat” of bug injection happens in <code>changeSendmsgSyscallResult</code>:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb5-1" title="1"><span class="ot">changeSendmsgSyscallResult ::</span> (<span class="dt">MonadIO</span> m, <span class="dt">MonadReader</span> (<span class="dt">IORef</span> <span class="dt">Int</span>) m)</a>
+<a class="sourceLine" id="cb5-2" title="2">                           <span class="ot">=&gt;</span> <span class="dt">ConduitT</span> <span class="dt">SyscallEvent</span> <span class="dt">SyscallEvent</span> m ()</a>
+<a class="sourceLine" id="cb5-3" title="3">changeSendmsgSyscallResult <span class="fu">=</span> awaitForever <span class="fu">$</span> \(pid, exitOrErrno) <span class="ot">-&gt;</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb5-4" title="4">  yield (pid, exitOrErrno)</a>
+<a class="sourceLine" id="cb5-5" title="5">  <span class="kw">case</span> exitOrErrno <span class="kw">of</span></a>
+<a class="sourceLine" id="cb5-6" title="6">    <span class="dt">Left</span>{} <span class="ot">-&gt;</span> <span class="fu">pure</span> () <span class="co">-- ignore erroneous syscalls</span></a>
+<a class="sourceLine" id="cb5-7" title="7">    <span class="dt">Right</span> exit <span class="ot">-&gt;</span> <span class="kw">case</span> exit <span class="kw">of</span></a>
+<a class="sourceLine" id="cb5-8" title="8">      <span class="dt">DetailedSyscallExit_sendmsg</span> <span class="dt">SyscallExitDetails_sendmsg</span></a>
+<a class="sourceLine" id="cb5-9" title="9">          { bytesSent } <span class="ot">-&gt;</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb5-10" title="10">            when ((<span class="st">&quot;msg2&quot;</span> <span class="ot">`B.isInfixOf`</span> bytesSent)) <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb5-11" title="11">              counterRef <span class="ot">&lt;-</span> ask</a>
+<a class="sourceLine" id="cb5-12" title="12">              counter <span class="ot">&lt;-</span> liftIO <span class="fu">$</span> readIORef counterRef</a>
+<a class="sourceLine" id="cb5-13" title="13">              when (counter <span class="fu">&lt;</span> <span class="dv">2</span>) <span class="fu">$</span> liftIO <span class="fu">$</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb5-14" title="14">                <span class="kw">let</span> timedOutErrno <span class="fu">=</span> foreignErrnoToERRNO eTIMEDOUT</a>
+<a class="sourceLine" id="cb5-15" title="15">                setExitedSyscallResult pid (<span class="dt">Left</span> timedOutErrno)</a>
+<a class="sourceLine" id="cb5-16" title="16">                modifyIORef' counterRef (<span class="fu">+</span><span class="dv">1</span>)</a>
+<a class="sourceLine" id="cb5-17" title="17">      _ <span class="ot">-&gt;</span> <span class="fu">pure</span> ()</a></code></pre></div>
+<p>The above code processes <code>SyscallEvent</code>s and when <code>sendmsg(2)</code> syscall is encountered, then the bytes sent are investigated. Certain type of messages, those which contain “msg2”, will be failed with a timeout error, but only a limited number of them.</p>
+<p>To determine the actual value that needs to be set, let’s first have a look at the <code>setExitedSyscallResult</code> function:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb6-1" title="1"><span class="ot">setExitedSyscallResult ::</span> <span class="dt">CPid</span> <span class="ot">-&gt;</span> <span class="dt">Either</span> <span class="dt">ERRNO</span> <span class="dt">Word64</span> <span class="ot">-&gt;</span> <span class="dt">IO</span> ()</a>
+<a class="sourceLine" id="cb6-2" title="2">setExitedSyscallResult cpid errorOrRetValue <span class="fu">=</span> <span class="kw">do</span></a>
+<a class="sourceLine" id="cb6-3" title="3">  <span class="kw">let</span> newRetValue <span class="fu">=</span></a>
+<a class="sourceLine" id="cb6-4" title="4">        <span class="kw">case</span> errorOrRetValue <span class="kw">of</span></a>
+<a class="sourceLine" id="cb6-5" title="5">          <span class="dt">Right</span> num <span class="ot">-&gt;</span> num</a>
+<a class="sourceLine" id="cb6-6" title="6">          <span class="dt">Left</span> (<span class="dt">ERRNO</span> errno) <span class="ot">-&gt;</span> <span class="fu">fromIntegral</span> (<span class="fu">-</span>errno)</a>
+<a class="sourceLine" id="cb6-7" title="7">  regs <span class="ot">&lt;-</span> annotatePtrace <span class="st">&quot;setExitedSyscallResult: ptrace_getregs&quot;</span> <span class="fu">$</span> ptrace_getregs cpid</a>
+<a class="sourceLine" id="cb6-8" title="8">  <span class="kw">let</span> newRegs <span class="fu">=</span></a>
+<a class="sourceLine" id="cb6-9" title="9">        <span class="kw">case</span> regs <span class="kw">of</span></a>
+<a class="sourceLine" id="cb6-10" title="10">          <span class="dt">X86</span> r <span class="ot">-&gt;</span> <span class="dt">X86</span> r { eax <span class="fu">=</span> <span class="fu">fromIntegral</span> newRetValue }</a>
+<a class="sourceLine" id="cb6-11" title="11">          <span class="dt">X86_64</span> r <span class="ot">-&gt;</span> <span class="dt">X86_64</span> r { rax <span class="fu">=</span> newRetValue }</a>
+<a class="sourceLine" id="cb6-12" title="12">  annotatePtrace <span class="st">&quot;setExitedSyscallResult: ptrace_setregs&quot;</span> <span class="fu">$</span> ptrace_setregs cpid newRegs</a></code></pre></div>
+<p>When we set the syscall result to some <code>errno</code> value, then we take a negative of it and set in <code>rax</code> register in case of 64-bit architecture. To understand what is going on here, it’s good to see how syscalls are executed from assembly.</p>
+<h3 id="system-call-in-detail">4.3 System call in detail</h3>
+<p>Firstly, an application needs to set general purpose registers. On x86_64 this will be: syscall number in <code>rax</code> register, syscall arguments in <code>rdi</code>, <code>rsi</code>, <code>rdx</code>, <code>r10</code>, <code>r8</code>, <code>r9</code> registers. After that, a <code>syscall</code> machine instruction is executed to pass control to the kernel. Upon completion, the <code>rax</code> register is filled with a return value. Here is an example taken from some <a href="https://stackoverflow.com/a/20326189/1738581">StackOverflow answer</a>:</p>
+<pre class="assembly"><code>        .global _start
+
+        .text
+_start:
+        # write(1, message, 13)
+        mov     $1, %rax                # system call 1 is write
+        mov     $1, %rdi                # file handle 1 is stdout
+        mov     $message, %rsi          # address of string to output
+        mov     $13, %rdx               # number of bytes
+        syscall
+
+        # exit(0)
+        mov     $60, %rax               # system call 60 is exit
+        xor     %rdi, %rdi              # return code 0
+        syscall
+message:
+        .ascii  &quot;Hello, World\n&quot;</code></pre>
+<p>Fortunately, all of this “register” work is usually done by syscall wrappers provided by a C standard library (in short: <code>libc</code>, most commonly it is GNU C Library: <code>glibc</code>), so we can simply call a C API function instead of assembly. There is one caveat, though, as described in man for syscalls (<code>man 2 intro</code>):</p>
+<blockquote>
+<p>On error, most system calls return a negative error number (..). The C library wrapper hides this detail from the caller: when a system call returns a negative value, the wrapper copies the absolute value into the <code>errno</code> variable, and returns -1 as the return value of the wrapper.</p>
+</blockquote>
+<p>This description is in fact, inaccurate, as not all negative return values are treated as an error. Some could be also valid, succesful results. For more details see: <a href="https://nullprogram.com/blog/2016/09/23/">Linux System Calls, Error Numbers, and In-Band Signaling</a>. In short, this is what happens to translate negative return value to <code>errno</code> in <a href="https://git.musl-libc.org/cgit/musl/tree/src/internal/syscall_ret.c?h=v1.1.15">libc library</a>:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode c"><code class="sourceCode c"><a class="sourceLine" id="cb8-1" title="1"><span class="dt">long</span> __syscall_ret(<span class="dt">unsigned</span> <span class="dt">long</span> r)</a>
+<a class="sourceLine" id="cb8-2" title="2">{</a>
+<a class="sourceLine" id="cb8-3" title="3">    <span class="cf">if</span> (r &gt; -4096UL) {</a>
+<a class="sourceLine" id="cb8-4" title="4">        errno = -r;</a>
+<a class="sourceLine" id="cb8-5" title="5">        <span class="cf">return</span> <span class="dv">-1</span>;</a>
+<a class="sourceLine" id="cb8-6" title="6">    }</a>
+<a class="sourceLine" id="cb8-7" title="7">    <span class="cf">return</span> r;</a>
+<a class="sourceLine" id="cb8-8" title="8">}</a></code></pre></div>
+<p>In other words, in Hatrace we perform the syscall modification before <code>libc</code> translates error to <code>errno</code>, so we could also set the error value like that:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode haskell"><code class="sourceCode haskell"><a class="sourceLine" id="cb9-1" title="1">setExitedSyscallResult pid (<span class="dt">Right</span> <span class="fu">$</span> <span class="fu">fromIntegral</span> (<span class="fu">-</span><span class="dv">110</span><span class="ot"> ::</span> <span class="dt">CULong</span>))</a></code></pre></div>
+<h3 id="choosing-the-errno-value">4.4 Choosing the <code>errno</code> value</h3>
+<p>Where does the 110 value come from? I got it from <code>errno.h</code> (in my case it was in <code>/usr/include/asm-generic/errno.h</code>):</p>
+<div class="sourceCode">
+<pre class="sourceCode"><code class="sourceCode">
+...
+#define ESHUTDOWN       108     /* Cannot send after transport endpoint shutdown */
+#define ETOOMANYREFS    109     /* Too many references: cannot splice */
+<b>#define ETIMEDOUT       110     /* Connection timed out */</b>
+#define ECONNREFUSED    111     /* Connection refused */
+#define EHOSTDOWN       112     /* Host is down */
+#define EHOSTUNREACH    113     /* No route to host */
+...
+</code></pre>
+</div>
+<p>When the above error value is used, running the test scenarios will produce following output:</p>
+<pre><code>$ stack build --test
+idempotent-producer-0.1.0.0: test (suite: idempotent-producer-test)
+
+
+IdempotentProducer
+  kafka producer without idempotence
+zookeeper started
+kafka broker started
+%3|1567199588.190|FAIL|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 179ms in state UP)
+%3|1567199588.190|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 179ms in state UP)
+%3|1567199588.291|FAIL|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 87ms in state UP)
+%3|1567199588.291|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 87ms in state UP)
+messages were sent to broker
+consumed messages: [&quot;msg1&quot;,&quot;msg2&quot;,&quot;msg2&quot;,&quot;msg2&quot;,&quot;msg3&quot;,&quot;msg4&quot;,&quot;msg5&quot;]
+kafka broker stopped
+zookeeper stopped
+    sends duplicate messages on timeouts
+  kafka producer with idempotence enabled
+zookeeper started
+kafka broker started
+%3|1567199633.280|FAIL|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 80ms in state UP)
+%3|1567199633.281|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 80ms in state UP)
+%3|1567199633.385|FAIL|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 99ms in state UP)
+%3|1567199633.386|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: Connection timed out (after 99ms in state UP)
+messages were sent to broker
+consumed messages: [&quot;msg1&quot;,&quot;msg2&quot;,&quot;msg3&quot;,&quot;msg4&quot;,&quot;msg5&quot;]
+kafka broker stopped
+zookeeper stopped
+    sends duplicates, but they are discarded on the broker
+
+Finished in 86.6692 seconds
+2 examples, 0 failures
+
+idempotent-producer-0.1.0.0: Test suite idempotent-producer-test passed</code></pre>
+<p>The <code>ETIMEDOUT</code> error was chosen as an example, from <code>man 7 tcp</code> page:</p>
+<blockquote>
+<p>ETIMEDOUT The other end didn’t acknowledge retransmitted data after some time.</p>
+</blockquote>
+<p>Could this situation also happen in real life? According to <em>Unix Network Programming, Volume 1, Chapter 7</em> yes, when the <code>SO_KEEPALIVE</code> socket option is set:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Scenario</th>
+<th>Peer process crashes</th>
+<th>Peer host crashes</th>
+<th>Peer host is unreachable</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Our TCP is actively sending data</td>
+<td>Peer TCP sends a FIN, which we can detect immediately using select for readability. If TCP sends another segment, peer TCP responds with an RST. If the application attempts to write to the socket after TCP has received an RST, our socket implementation sends us SIGPIPE.</td>
+<td>Our TCP will time out and our socket’s pending error will be set to <strong>ETIMEDOUT</strong></td>
+<td>Our TCP will time out and our socket’s pending error will be set to EHOSTUNREACH.</td>
+</tr>
+</tbody>
+</table>
+<p><code>SO_KEEPALIVE</code> is configurable in <code>librdkafka</code> <a href="https://github.com/edenhill/librdkafka/blob/v1.0.0/CONFIGURATION.md">config</a> with <code>socket.keepalive.enable</code>.</p>
+<p>The <a href="https://github.com/edenhill/librdkafka/blob/8695b9d63ac0fe1b891b511d5b36302ffc84d4e2/src/rdkafka_broker.c#L794">error handling logic</a> in <code>librdkafka</code> handles most of the errors similarly: tearing down the connection and reconnecting.</p>
+<p>We could also try running the example with another error set. For example, using the already mentioned <code>EHOSTUNREACH</code>, which will produce following errors in the log:</p>
+<pre><code>%3|1567202450.663|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: No route to host (after 89ms in state UP)</code></pre>
+<p>There is also a possibility to change the response that is received from the broker. We would then need to hook on <code>recvmsg(2)</code> in Hatrace and change the bytes received, e.g. to a more typical error response: <code>LEADER_NOT_AVAILABLE</code> as defined in <a href="http://kafka.apache.org/protocol.html">Kafka protocol specification</a>.</p>
+<p>The code for the above is available at: <a href="https://github.com/tgrez/kafka-producer-idempotence" class="uri">https://github.com/tgrez/kafka-producer-idempotence</a>.</p>
+<h2 id="summary">5. Summary</h2>
+<p>This was a simple example of using Hatrace library to test the behavior of our application under failure scenario, which is hard to reproduce otherwise. It is applicable for all applications using system calls, so the application itself can be written in any language, while our tests would need to be written in Haskell.</p>
+<p>The main drawback of this approach is its performance. Attaching to another process with <code>ptrace</code> and reading its memory makes calling syscalls much slower, even though the overhead of Haskell’s FFI is <a href="https://github.com/dyu/ffi-overhead">quite low</a>.</p>
+<p>For more possible use cases of Hatrace have a look at: <a href="https://github.com/nh2/hatrace#use-cases" class="uri">https://github.com/nh2/hatrace#use-cases</a></p>
+<p><em>Special thanks to Krzysztof Siejkowski, Przemysław Szałaj and Wojciech Wiśniewski for proofreading.</em></p>
+    </section>
+</article>
+
+            </div>
+        </main>
+
+        <footer>
+            Site proudly generated by
+            <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+        </footer>
+    </body>
+</html>
