@@ -2,13 +2,13 @@
 title: Simulating network failures at syscall level
 ---
 
-### Intro
+## 1. Intro
 
-A short story of when checking one small property leads you deep down into the rabbit hole. The goal was to check high-level fault-tolerance property and I ended up changing CPU register to get the exact failure I wanted and exactly when I wanted.
+A short story of when checking one small property leads you deep down into the rabbit hole. The goal was to check high-level fault-tolerance property while sending messages to Kafka and I ended up changing the CPU register to get the exact failure I wanted and exactly when I wanted.
 
 For those familiar with the topic of syscall interception it could still be entertaining, as it presents a new tool for the job.
 
-### Kafka producer idempotence
+## 2. Kafka producer idempotence
 
 All of this started, when I wanted to setup Kafka client with a new feature introduced in librdkafka 1.0: idempotent producer. Here is a definition of this feature, as described in [Confluent blog](https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/):
 
@@ -32,7 +32,7 @@ Here are the options I have found so far:
 
 I chose Hatrace to verify Kafka producer idempotence.
 
-### What is Hatrace?
+## 3. What is Hatrace?
 
 Short answer:
 
@@ -40,7 +40,9 @@ Short answer:
 
 At least that is, what its [GitHub page](https://github.com/nh2/hatrace) says. For those of you, who wonder what is `strace`, it's a Linux utility tool for tracing system calls. Going futher, a system call (in short syscall) is a way for your application to use the interface of the Linux kernel to perform actions such as: reading a file from hard disk, creating network sockets, sending data through sockets, process creation and management, memory management, in short any IO operation your application uses.
 
-Hatrace is:
+Hatrace is an open-source project written in Haskell and led by [Niklas](https://github.com/nh2) with help of [Kirill](https://github.com/qrilka). They were very helpful when introducing me into the project at ZuriHac. Contributing to Hatrace is far easier than I initially expected and there is still plenty of work left to be done. You can contact me if you need help with starting out.
+
+Hatrace includes:
 
 * an executable to trace those syscalls (similarly to `strace`)
 * a library for processing syscalls in a programmatic way
@@ -51,13 +53,13 @@ So, any IO operation made by your application can be traced and optionally modif
 
 By changing syscalls we can inject a failure "from below". From the application perspective there won't be any difference between real and injected system call failure. There is no need to change the code and it could be used for any application, any language or virtual machine.
 
-Hatrace is a relatively young (still a "work in progress") project led by [Niklas](https://github.com/nh2) and [Kirill](https://github.com/qrilka). It is written in Haskell, which you always wanted to learn ;) and that's a good thing, cause contributing to Hatrace is way easier than I initially thought.
-
 It should be noted that `strace` also enables modification of syscalls using `-e inject`, but its abilities are limited by its executable syntax. For example, we can change the result of syscalls, but there is no programmatic way to control which syscalls should be changed.
 
-The advantage of Hatrace over the other approaches described above is that in its current form it enables precise introduction of failure into syscalls. There are other ways to achieve this precision in overriding syscall results: [1](http://samanbarghi.com/blog/2014/09/05/how-to-wrap-a-system-call-libc-function-in-linux/), [2](https://github.com/pmem/syscall_intercept), [3](https://blog.trailofbits.com/2019/01/17/how-to-write-a-rootkit-without-really-trying/). Those mainly involve using the `LD_PRELOAD` trick and wrapping `glibc` calls. This approach has its own limitations. For example, [Go uses syscalls](https://stackoverflow.com/questions/55735864/how-does-golang-make-system-calls) directly on Linux, without depending on `glibc`. The other drawback is a necessity to use a lower-level language, and even though [all programmers must learn c](https://www.deconstructconf.com/2017/joe-damato-all-programmers-must-learn-c-and-assembly), I still prefer to write my test cases in a higher level language.
+The advantage of Hatrace over the other approaches described above is that it enables precise introduction of failure into syscalls. There are other ways to achieve this precision in overriding syscall results: [1](http://samanbarghi.com/blog/2014/09/05/how-to-wrap-a-system-call-libc-function-in-linux/), [2](https://github.com/pmem/syscall_intercept), [3](https://blog.trailofbits.com/2019/01/17/how-to-write-a-rootkit-without-really-trying/). Those mainly involve using the `LD_PRELOAD` trick and wrapping `glibc` calls. This approach has its own limitations. For example, [Go uses syscalls](https://stackoverflow.com/questions/55735864/how-does-golang-make-system-calls) directly on Linux, without depending on `glibc`. The other drawback is a necessity to use a lower-level language, and even though [all programmers must learn c](https://www.deconstructconf.com/2017/joe-damato-all-programmers-must-learn-c-and-assembly), I still prefer to write my test cases in a higher level language.
 
-### Hatrace in practice
+## 4. Hatrace in practice
+
+### 4.1 Running test cases
 
 This is the code used to execute test cases in two scenarios:
 
@@ -109,9 +111,11 @@ So, what happens in here is that in lines:
   argv <- procToArgv cmd [brokerAddress, kafkaTopic, show messageCount, show enableIdempotence]
 ```
 
-A command to be executed is build. Firstly, a path to executable is constructed relative to current test location - this is a hack to run main program directly from tests. An why do we need to start a separate process? Internally, Hatrace uses similar mechanism as `strace`, which is a `ptrace(2)` system call as described in its man page:
+A command to be executed is build. Firstly, a path to executable is constructed relative to current test location - this is a hack to run main program directly from tests. And why do we need to start a separate process? Internally, Hatrace uses similar mechanism as `strace`, which is a `ptrace(2)` system call as described in its man page:
 
 >The `ptrace()` system call provides a means by which **one process** (the "tracer") may observe and control the execution of **another process** (the "tracee"), and examine and change the tracee's memory and registers.  It is primarily used to implement breakpoint debugging and system call tracing.
+
+### 4.2 Changing syscall result
 
 Next, we provide the parameters for our Kafka producer and then we run it in:
 
@@ -164,7 +168,9 @@ setExitedSyscallResult cpid errorOrRetValue = do
   annotatePtrace "setExitedSyscallResult: ptrace_setregs" $ ptrace_setregs cpid newRegs
 ```
 
-When we set the syscall result to some errno value, then we take a negative of it and set in `rax` register in case of 64-bit architecture. To understand what is going on here, it's good to see how syscalls are executed from assembly.
+When we set the syscall result to some `errno` value, then we take a negative of it and set in `rax` register in case of 64-bit architecture. To understand what is going on here, it's good to see how syscalls are executed from assembly.
+
+### 4.3 System call in detail
 
 Firstly, an application needs to set general purpose registers. On x86_64 this will be: syscall number in `rax` register, syscall arguments in `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` registers. After that, a `syscall` machine instruction is executed to pass control to the kernel. Upon completion, the `rax` register is filled with a return value. Here is an example taken from some [StackOverflow answer](https://stackoverflow.com/a/20326189/1738581):
 
@@ -188,11 +194,11 @@ message:
         .ascii  "Hello, World\n"
 ```
 
-Fortunately, all of this "register" work is usually done by syscall wrappers provided by the `glibc` library, so we can simply call a C API function instead of assembly. There is one caveat, though, as described in man for syscalls (`man 2 intro`):
+Fortunately, all of this "register" work is usually done by syscall wrappers provided by a C standard library (in short: `libc`, most commonly it is GNU C Library: `glibc`), so we can simply call a C API function instead of assembly. There is one caveat, though, as described in man for syscalls (`man 2 intro`):
 
->On error, most system calls return a negative error number (..). The C library wrapper hides this detail from the caller: when a system call returns a negative value, the wrapper copies the absolute value into the errno variable, and returns -1 as the return value of the wrapper.
+>On error, most system calls return a negative error number (..). The C library wrapper hides this detail from the caller: when a system call returns a negative value, the wrapper copies the absolute value into the `errno` variable, and returns -1 as the return value of the wrapper.
 
-This description is in fact, inaccurate, as not all negative return values are treated as an error. Some could be also valid, succesful results. For more details see: [Linux System Calls, Error Numbers, and In-Band Signaling](https://nullprogram.com/blog/2016/09/23/). In short, this is what happens to translate negative return value to errno in [libc library](https://git.musl-libc.org/cgit/musl/tree/src/internal/syscall_ret.c?h=v1.1.15):
+This description is in fact, inaccurate, as not all negative return values are treated as an error. Some could be also valid, succesful results. For more details see: [Linux System Calls, Error Numbers, and In-Band Signaling](https://nullprogram.com/blog/2016/09/23/). In short, this is what happens to translate negative return value to `errno` in [libc library](https://git.musl-libc.org/cgit/musl/tree/src/internal/syscall_ret.c?h=v1.1.15):
 
 ```C
 long __syscall_ret(unsigned long r)
@@ -210,6 +216,8 @@ In other words, we could also set the error value like that:
 ```Haskell
 setExitedSyscallResult pid (Right $ fromIntegral (-110 :: CULong))
 ```
+
+### 4.4 Choosing the `errno` value
 
 Where does the 110 value come from? I got it from `errno.h` (in my case it was in `/usr/include/asm-generic/errno.h`):
 
@@ -263,7 +271,11 @@ Finished in 86.6692 seconds
 idempotent-producer-0.1.0.0: Test suite idempotent-producer-test passed
 ```
 
-The `ETIMEDOUT` error was chosen as an example, from `man 7 tcp` page. The [error handling logic](https://github.com/edenhill/librdkafka/blob/8695b9d63ac0fe1b891b511d5b36302ffc84d4e2/src/rdkafka_broker.c#L794) in `librdkafka` handles most of the errors similarly: tearing down the connection and reconnecting.
+The `ETIMEDOUT` error was chosen as an example, from `man 7 tcp` page:
+
+>ETIMEDOUT The other end didn't acknowledge retransmitted data after some time.
+
+
 
 Could this situation also happen in real life? According to *Unix Network Programming, Volume 1, Chapter 7* yes, when the `SO_KEEPALIVE` socket option is set:
 
@@ -274,16 +286,22 @@ Our TCP is actively sending data |Peer TCP sends a FIN, which we can detect imme
 
 `SO_KEEPALIVE` is configurable in `librdkafka` [config](https://github.com/edenhill/librdkafka/blob/v1.0.0/CONFIGURATION.md) with `socket.keepalive.enable`.
 
+The [error handling logic](https://github.com/edenhill/librdkafka/blob/8695b9d63ac0fe1b891b511d5b36302ffc84d4e2/src/rdkafka_broker.c#L794) in `librdkafka` handles most of the errors similarly: tearing down the connection and reconnecting.
+
 We could also try running the example with another error set. For example, using the already mentioned `EHOSTUNREACH`, which will produce following errors in the log:
 
 ```
 %3|1567202450.663|ERROR|rdkafka#producer-1| [thrd:127.0.0.1:9092/1]: 127.0.0.1:9092/1: Send failed: No route to host (after 89ms in state UP)
 ```
 
-## Summary
+There is also a possibility to change the response that is received from the broker. We would then need to hook on `recvmsg(2)` in Hatrace and change the bytes received, e.g. to a more typical error response: `LEADER_NOT_AVAILABLE` as defined in [Kafka protocol specification](http://kafka.apache.org/protocol.html).
+
+## 5. Summary
 
 This was a simple example of using Hatrace library to test the behavior of our application under failure scenario, which is hard to reproduce otherwise. It is applicable for all applications using system calls, so the application itself can be written in any language, while our tests would need to be written in Haskell.
 
 The main drawback of this approach is its performance. Attaching to another process with `ptrace` and reading its memory makes calling syscalls much slower, even though the overhead of Haskell's FFI is [quite low](https://github.com/dyu/ffi-overhead).
 
 For more possible use cases of Hatrace have a look at: [https://github.com/nh2/hatrace#use-cases](https://github.com/nh2/hatrace#use-cases)
+
+*Special thanks to Krzysztof Siejkowski, Przemysław Szałaj and Wojciech Wiśniewski for proofreading.*
