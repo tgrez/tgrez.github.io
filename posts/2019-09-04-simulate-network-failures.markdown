@@ -296,6 +296,8 @@ We could also try running the example with another error set. For example, using
 
 There is also a possibility to change the response that is received from the broker. We would then need to hook on `recvmsg(2)` in Hatrace and change the bytes received, e.g. to a more typical error response: `LEADER_NOT_AVAILABLE` as defined in [Kafka protocol specification](http://kafka.apache.org/protocol.html).
 
+The code for the above is available at: [https://github.com/tgrez/kafka-producer-idempotence](https://github.com/tgrez/kafka-producer-idempotence).
+
 ## 5. Summary
 
 This was a simple example of using Hatrace library to test the behavior of our application under failure scenario, which is hard to reproduce otherwise. It is applicable for all applications using system calls, so the application itself can be written in any language, while our tests would need to be written in Haskell.
